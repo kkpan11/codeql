@@ -1,3 +1,14 @@
+## 1.0.2
+
+No user-facing changes.
+
+## 1.0.1
+
+### Minor Analysis Improvements
+
+* The query `java/spring-disabled-csrf-protection` detects disabling CSRF via `ServerHttpSecurity$CsrfSpec::disable`.
+* Added more `java.io.File`-related sinks to the path injection query.
+
 ## 1.0.0
 
 ### Breaking Changes
