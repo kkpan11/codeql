@@ -19,13 +19,19 @@ import ScriptInjectionFlow::PathGraph
 /** A method of ScriptEngine that allows code injection. */
 class ScriptEngineMethod extends Method {
   ScriptEngineMethod() {
-    this.getDeclaringType().getAnAncestor().hasQualifiedName("javax.script", "ScriptEngine") and
+    this.getDeclaringType()
+        .getAnAncestor()
+        .hasQualifiedName(javaxOrJakarta() + ".script", "ScriptEngine") and
     this.hasName("eval")
     or
-    this.getDeclaringType().getAnAncestor().hasQualifiedName("javax.script", "Compilable") and
+    this.getDeclaringType()
+        .getAnAncestor()
+        .hasQualifiedName(javaxOrJakarta() + ".script", "Compilable") and
     this.hasName("compile")
     or
-    this.getDeclaringType().getAnAncestor().hasQualifiedName("javax.script", "ScriptEngineFactory") and
+    this.getDeclaringType()
+        .getAnAncestor()
+        .hasQualifiedName(javaxOrJakarta() + ".script", "ScriptEngineFactory") and
     this.hasName(["getProgram", "getMethodCallSyntax"])
   }
 }
@@ -78,7 +84,10 @@ class RhinoDefineClassMethod extends Method {
 predicate isScriptArgument(MethodCall ma, Expr sink) {
   exists(ScriptEngineMethod m |
     m = ma.getMethod() and
-    if m.getDeclaringType().getAnAncestor().hasQualifiedName("javax.script", "ScriptEngineFactory")
+    if
+      m.getDeclaringType()
+          .getAnAncestor()
+          .hasQualifiedName(javaxOrJakarta() + ".script", "ScriptEngineFactory")
     then sink = ma.getArgument(_) // all arguments allow script injection
     else sink = ma.getArgument(0)
   )
@@ -131,18 +140,24 @@ class ScriptInjectionSink extends DataFlow::ExprNode {
 }
 
 /**
- * A taint tracking configuration that tracks flow from `ThreatModelFlowSource` to an argument
+ * A taint tracking configuration that tracks flow from `ActiveThreatModelSource` to an argument
  * of a method call that executes injected script.
  */
 module ScriptInjectionConfig implements DataFlow::ConfigSig {
-  predicate isSource(DataFlow::Node source) { source instanceof ThreatModelFlowSource }
+  predicate isSource(DataFlow::Node source) { source instanceof ActiveThreatModelSource }
 
   predicate isSink(DataFlow::Node sink) { sink instanceof ScriptInjectionSink }
 }
 
 module ScriptInjectionFlow = TaintTracking::Global<ScriptInjectionConfig>;
 
-from ScriptInjectionFlow::PathNode source, ScriptInjectionFlow::PathNode sink
-where ScriptInjectionFlow::flowPath(source, sink)
-select sink.getNode().(ScriptInjectionSink).getMethodCall(), source, sink,
-  "Java Script Engine evaluate $@.", source.getNode(), "user input"
+deprecated query predicate problems(
+  MethodCall sinkCall, ScriptInjectionFlow::PathNode source, ScriptInjectionFlow::PathNode sink,
+  string message1, DataFlow::Node sourceNode, string message2
+) {
+  ScriptInjectionFlow::flowPath(source, sink) and
+  sinkCall = sink.getNode().(ScriptInjectionSink).getMethodCall() and
+  message1 = "Java Script Engine evaluate $@." and
+  sourceNode = source.getNode() and
+  message2 = "user input"
+}

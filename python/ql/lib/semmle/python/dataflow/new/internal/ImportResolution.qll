@@ -11,6 +11,19 @@ private import semmle.python.dataflow.new.TypeTracking
 private import semmle.python.dataflow.new.internal.DataFlowPrivate
 
 /**
+ * Holds if `init` is a package's `__init__.py` and `var` is a global variable in
+ * `init` whose name matches a submodule of the package.
+ *
+ * Inlined from `SsaSource::init_module_submodule_defn` to avoid pulling
+ * `semmle.python.essa.SsaDefinitions` into the new dataflow stack.
+ */
+private predicate initModuleSubmoduleDefn(GlobalVariable var, Module init) {
+  init.isPackageInit() and
+  exists(init.getPackage().getSubModule(var.getId())) and
+  var.getScope() = init
+}
+
+/**
  * Python modules and the way imports are resolved are... complicated. Here's a crash course in how
  * it works, as well as some caveats to bear in mind when looking at the implementation in this
  * module.
@@ -278,6 +291,12 @@ module ImportResolution {
       )
   }
 
+  /** Join-order helper for `getImmediateModuleReference`. */
+  pragma[nomagic]
+  private predicate module_reference_accesses(DataFlow::AttrRead ar, Module p, string attr_name) {
+    ar.accesses(getModuleReference(p), attr_name)
+  }
+
   /**
    * Gets a dataflow node that is an immediate reference to the module `m`.
    *
@@ -294,16 +313,13 @@ module ImportResolution {
     )
     or
     // Reading an attribute on a module may return a submodule (or subpackage).
-    exists(DataFlow::AttrRead ar, Module p, string attr_name |
-      ar.accesses(getModuleReference(p), attr_name) and
-      result = ar
-    |
+    exists(Module p, string attr_name | module_reference_accesses(result, p, attr_name) |
       m = getModuleFromName(p.getPackageName() + "." + attr_name)
     )
     or
     // This is also true for attributes that come from reexports.
     exists(Module reexporter, string attr_name |
-      result.(DataFlow::AttrRead).accesses(getModuleReference(reexporter), attr_name) and
+      module_reference_accesses(result, reexporter, attr_name) and
       module_reexport(reexporter, attr_name, m)
     )
     or
@@ -322,7 +338,7 @@ module ImportResolution {
     // imported yet.
     exists(string submodule, Module package, EssaVariable var |
       submodule = var.getName() and
-      SsaSource::init_module_submodule_defn(var.getSourceVariable(), package.getEntryNode()) and
+      initModuleSubmoduleDefn(var.getSourceVariable(), package) and
       m = getModuleFromName(package.getPackageName() + "." + submodule) and
       result.asCfgNode() = var.getDefinition().(EssaNodeDefinition).getDefiningNode()
     )

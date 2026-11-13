@@ -1,0 +1,36 @@
+# Workspace for all Rust packages _except_ the Python extractor.
+#
+# The Python extractor can not be included as it links against an older version
+# of tree-sitter. When this is no longer the case, the Python extractor should
+# be included here as well.
+[workspace]
+
+resolver = "2"
+members = [
+    "shared/tree-sitter-extractor",
+    "shared/yeast",
+    "shared/yeast-macros",
+    "shared/yeast-schema",
+    "ruby/extractor",
+    "unified/extractor",
+    "unified/swift-syntax-rs",
+    "rust/extractor",
+    "rust/extractor/macros",
+    "rust/ast-generator",
+    "rust/autobuild",
+    "cpp/extractor/bmn",
+    "ql/extractor",
+    "ql/buramu",
+    "ql/buramu/tree-sitter-blame",
+    "unified/extractor-unsupported-os",
+]
+exclude = [
+    "python/extractor/tsg-python",
+    "rust/ql/test",
+    "rust/ql/integration-tests",
+]
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+explicit_iter_loop = "warn"
+manual_let_else = "warn"

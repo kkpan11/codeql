@@ -12,6 +12,7 @@ int vfprintf (FILE *, const char *, va_list);
 
 int a = 1;
 int b;
+int *c;
 
 int my_printf(const char * fmt, ...)
 {
@@ -24,15 +25,22 @@ int my_printf(const char * fmt, ...)
     return ret;
 }
 
-int f1()
+int f1() // $ Alert
 {
     my_printf("%d\n", a + 2);
     my_printf("%d\n", b + 2); // BAD
     return 0;
 }
 
-int main()
+void f2() {
+    my_printf("%d\n", b); // GOOD
+}
+
+int main() // $ Alert
 {
-    int b = f1();
+    unsigned size = sizeof(*c); // GOOD
+    my_printf("%d\n", b); // BAD
+    b = f1();
+    f2();
     return 0;
 }

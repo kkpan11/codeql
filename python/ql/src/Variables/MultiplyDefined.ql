@@ -2,7 +2,8 @@
  * @name Variable defined multiple times
  * @description Assignment to a variable occurs multiple times without any intermediate use of that variable
  * @kind problem
- * @tags maintainability
+ * @tags quality
+ *       maintainability
  *       useless-code
  *       external/cwe/cwe-563
  * @problem.severity warning
@@ -23,8 +24,8 @@ predicate multiply_defined(AstNode asgn1, AstNode asgn2, Variable v) {
 
   forex(Definition def, Definition redef |
     def.getVariable() = v and
-    def = asgn1.getAFlowNode() and
-    redef = asgn2.getAFlowNode()
+    def.getNode() = asgn1 and
+    redef.getNode() = asgn2
   |
     def.isUnused() and
     def.getARedef() = redef and

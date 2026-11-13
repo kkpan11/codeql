@@ -4,11 +4,13 @@ private import semmle.code.cpp.ir.implementation.internal.OperandTag
 private import semmle.code.cpp.ir.internal.CppType
 private import semmle.code.cpp.models.interfaces.SideEffect
 private import semmle.code.cpp.models.interfaces.Throwing
+private import semmle.code.cpp.models.interfaces.NonThrowing
 private import InstructionTag
 private import SideEffects
 private import TranslatedElement
 private import TranslatedExpr
 private import TranslatedFunction
+private import TranslatedInitialization
 private import DefaultOptions as DefaultOptions
 
 /**
@@ -84,11 +86,10 @@ abstract class TranslatedCall extends TranslatedExpr {
           this.getEnclosingFunction().getFunction() = instr.getEnclosingFunction()
         )
     else (
-      not this.mustThrowException() and
+      not this.mustThrowException(_) and
       result = this.getParent().getChildSuccessor(this, kind)
       or
-      this.mayThrowException() and
-      kind instanceof ExceptionEdge and
+      this.mayThrowException(kind) and
       result = this.getParent().getExceptionSuccessorInstruction(any(GotoEdge edge))
     )
   }
@@ -117,14 +118,14 @@ abstract class TranslatedCall extends TranslatedExpr {
   final override Instruction getResult() { result = this.getInstruction(CallTag()) }
 
   /**
-   * Holds if the evaluation of this call may throw an exception.
+   * Holds if the evaluation of this call may throw an exception of the kind represented by the `ExceptionEdge`.
    */
-  abstract predicate mayThrowException();
+  abstract predicate mayThrowException(ExceptionEdge e);
 
   /**
-   * Holds if the evaluation of this call always throws an exception.
+   * Holds if the evaluation of this call always throws an exception of the kind represented by the `ExceptionEdge`.
    */
-  abstract predicate mustThrowException();
+  abstract predicate mustThrowException(ExceptionEdge e);
 
   /**
    * Gets the result type of the call.
@@ -215,9 +216,6 @@ abstract class TranslatedSideEffects extends TranslatedElement {
   abstract Expr getExpr();
 
   final override Locatable getAst() { result = this.getExpr() }
-
-  /** DEPRECATED: Alias for getAst */
-  deprecated override Locatable getAST() { result = this.getAst() }
 
   final override Declaration getFunction() { result = getEnclosingDeclaration(this.getExpr()) }
 
@@ -335,14 +333,14 @@ class TranslatedExprCall extends TranslatedCallExpr {
     result = getTranslatedExpr(expr.getExpr().getFullyConverted())
   }
 
-  final override predicate mayThrowException() {
+  final override predicate mayThrowException(ExceptionEdge e) {
     // We assume that a call to a function pointer will not throw an exception.
     // This is not sound in general, but this will greatly reduce the number of
     // exceptional edges.
     none()
   }
 
-  final override predicate mustThrowException() { none() }
+  final override predicate mustThrowException(ExceptionEdge e) { none() }
 }
 
 /**
@@ -351,7 +349,7 @@ class TranslatedExprCall extends TranslatedCallExpr {
 class TranslatedFunctionCall extends TranslatedCallExpr, TranslatedDirectCall {
   override FunctionCall expr;
 
-  override Function getInstructionFunction(InstructionTag tag) {
+  override Declaration getInstructionFunction(InstructionTag tag) {
     tag = CallTargetTag() and result = expr.getTarget()
   }
 
@@ -365,12 +363,20 @@ class TranslatedFunctionCall extends TranslatedCallExpr, TranslatedDirectCall {
     not exists(MemberFunction func | expr.getTarget() = func and func.isStatic())
   }
 
-  final override predicate mayThrowException() {
-    expr.getTarget().(ThrowingFunction).mayThrowException(_)
+  final override predicate mayThrowException(ExceptionEdge e) {
+    this.mustThrowException(e)
+    or
+    exists(MicrosoftTryStmt tryStmt | tryStmt.getStmt() = expr.getEnclosingStmt().getParent*()) and
+    e instanceof SehExceptionEdge
+    or
+    not expr.getTarget() instanceof NonCppThrowingFunction and
+    exists(TryStmt tryStmt | tryStmt.getStmt() = expr.getEnclosingStmt().getParent*()) and
+    e instanceof CppExceptionEdge
   }
 
-  final override predicate mustThrowException() {
-    expr.getTarget().(ThrowingFunction).mayThrowException(true)
+  final override predicate mustThrowException(ExceptionEdge e) {
+    expr.getTarget() instanceof AlwaysSehThrowingFunction and
+    e instanceof SehExceptionEdge
   }
 }
 
@@ -424,6 +430,9 @@ class TranslatedCallSideEffects extends TranslatedSideEffects, TTranslatedCallSi
     or
     expr instanceof DeleteOrDeleteArrayExpr and
     result = getTranslatedDeleteOrDeleteArray(expr).getInstruction(CallTag())
+    or
+    expr instanceof ConstructorDefaultFieldInit and
+    result = getTranslatedConstructorFieldInitialization(expr).getInstruction(CallTag())
   }
 }
 
@@ -499,11 +508,25 @@ abstract class TranslatedSideEffect extends TranslatedElement {
   abstract predicate sideEffectInstruction(Opcode opcode, CppType type);
 }
 
+private class CallOrDefaultFieldInit extends Expr {
+  CallOrDefaultFieldInit() {
+    this instanceof Call
+    or
+    this instanceof ConstructorDefaultFieldInit
+  }
+
+  Declaration getTarget() {
+    result = this.(Call).getTarget()
+    or
+    result = this.(ConstructorDefaultFieldInit).getTarget()
+  }
+}
+
 /**
  * The IR translation of a single argument side effect for a call.
  */
 abstract class TranslatedArgumentSideEffect extends TranslatedSideEffect {
-  Call call;
+  CallOrDefaultFieldInit callOrInit;
   int index;
   SideEffectOpcode sideEffectOpcode;
 
@@ -519,7 +542,7 @@ abstract class TranslatedArgumentSideEffect extends TranslatedSideEffect {
     result = "(read side effect for " + this.getArgString() + ")"
   }
 
-  override Call getPrimaryExpr() { result = call }
+  override Expr getPrimaryExpr() { result = callOrInit }
 
   override predicate sortOrder(int group, int indexInGroup) {
     indexInGroup = index and
@@ -581,9 +604,10 @@ abstract class TranslatedArgumentSideEffect extends TranslatedSideEffect {
     tag instanceof OnlyInstructionTag and
     operandTag instanceof BufferSizeOperandTag and
     result =
-      getTranslatedExpr(call.getArgument(call.getTarget()
-              .(SideEffectFunction)
-              .getParameterSizeIndex(index)).getFullyConverted()).getResult()
+      getTranslatedExpr(callOrInit
+            .(Call)
+            .getArgument(callOrInit.getTarget().(SideEffectFunction).getParameterSizeIndex(index))
+            .getFullyConverted()).getResult()
   }
 
   /** Holds if this side effect is a write side effect, rather than a read side effect. */
@@ -611,13 +635,10 @@ class TranslatedArgumentExprSideEffect extends TranslatedArgumentSideEffect,
   Expr arg;
 
   TranslatedArgumentExprSideEffect() {
-    this = TTranslatedArgumentExprSideEffect(call, arg, index, sideEffectOpcode)
+    this = TTranslatedArgumentExprSideEffect(callOrInit, arg, index, sideEffectOpcode)
   }
 
   final override Locatable getAst() { result = arg }
-
-  /** DEPRECATED: Alias for getAst */
-  deprecated override Locatable getAST() { result = this.getAst() }
 
   final override Type getIndirectionType() {
     result = arg.getUnspecifiedType().(DerivedType).getBaseType()
@@ -638,31 +659,31 @@ class TranslatedArgumentExprSideEffect extends TranslatedArgumentSideEffect,
  * The IR translation of an argument side effect for `*this` on a call, where there is no `Expr`
  * object that represents the `this` argument.
  *
- * The applies only to constructor calls, as the AST has exploit qualifier `Expr`s for all other
- * calls to non-static member functions.
+ * This applies to constructor calls and default field initializations, as the AST has explicit
+ * qualifier `Expr`s for all other calls to non-static member functions.
  */
-class TranslatedStructorQualifierSideEffect extends TranslatedArgumentSideEffect,
-  TTranslatedStructorQualifierSideEffect
+class TranslatedImplicitThisQualifierSideEffect extends TranslatedArgumentSideEffect,
+  TTranslatedImplicitThisQualifierSideEffect
 {
-  TranslatedStructorQualifierSideEffect() {
-    this = TTranslatedStructorQualifierSideEffect(call, sideEffectOpcode) and
+  TranslatedImplicitThisQualifierSideEffect() {
+    this = TTranslatedImplicitThisQualifierSideEffect(callOrInit, sideEffectOpcode) and
     index = -1
   }
 
-  final override Locatable getAst() { result = call }
+  final override Locatable getAst() { result = callOrInit }
 
-  /** DEPRECATED: Alias for getAst */
-  deprecated override Locatable getAST() { result = this.getAst() }
-
-  final override Type getIndirectionType() { result = call.getTarget().getDeclaringType() }
+  final override Type getIndirectionType() { result = callOrInit.getTarget().getDeclaringType() }
 
   final override string getArgString() { result = "this" }
 
   final override Instruction getArgInstruction() {
     exists(TranslatedStructorCall structorCall |
-      structorCall.getExpr() = call and
+      structorCall.getExpr() = callOrInit and
       result = structorCall.getQualifierResult()
     )
+    or
+    callOrInit instanceof ConstructorDefaultFieldInit and
+    result = getTranslatedFunction(callOrInit.getEnclosingFunction()).getLoadThisInstruction()
   }
 }
 
@@ -674,9 +695,6 @@ class TranslatedCallSideEffect extends TranslatedSideEffect, TTranslatedCallSide
   TranslatedCallSideEffect() { this = TTranslatedCallSideEffect(expr, sideEffectOpcode) }
 
   override Locatable getAst() { result = expr }
-
-  /** DEPRECATED: Alias for getAst */
-  deprecated override Locatable getAST() { result = this.getAst() }
 
   override Expr getPrimaryExpr() { result = expr }
 
@@ -715,9 +733,6 @@ class TranslatedAllocationSideEffect extends TranslatedSideEffect, TTranslatedAl
   TranslatedAllocationSideEffect() { this = TTranslatedAllocationSideEffect(expr) }
 
   override Locatable getAst() { result = expr }
-
-  /** DEPRECATED: Alias for getAst */
-  deprecated override Locatable getAST() { result = this.getAst() }
 
   override Expr getPrimaryExpr() { result = expr }
 

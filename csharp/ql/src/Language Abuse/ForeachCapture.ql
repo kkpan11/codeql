@@ -1,13 +1,14 @@
 /**
+ * @deprecated This query is no longer relevant as the semantics of capturing a 'foreach' variable
+ *             and using it outside the loop has been stable since C# version 5.
  * @name Capturing a foreach variable
  * @description Code that captures a 'foreach' variable and uses it outside the loop behaves differently in C# version 4 and C# version 5
  * @kind problem
  * @problem.severity recommendation
  * @precision medium
  * @id cs/captured-foreach-variable
- * @tags portability
- *       maintainability
- *       language-features
+ * @tags reliability
+ *       correctness
  *       external/cwe/cwe-758
  */
 
@@ -22,17 +23,17 @@ predicate lambdaCaptures(AnonymousFunctionExpr lambda, Variable v) {
   exists(VariableAccess va | va.getEnclosingCallable() = lambda | va.getTarget() = v)
 }
 
-predicate lambdaCapturesLoopVariable(AnonymousFunctionExpr lambda, ForeachStmt loop, Variable v) {
+predicate lambdaCapturesLoopVariable(AnonymousFunctionExpr lambda, ForEachStmt loop, Variable v) {
   lambdaCaptures(lambda, v) and
-  inForeachStmtBody(loop, lambda) and
+  inForEachStmtBody(loop, lambda) and
   loop.getVariable() = v
 }
 
-predicate inForeachStmtBody(ForeachStmt loop, Element e) {
+predicate inForEachStmtBody(ForEachStmt loop, Element e) {
   e = loop.getBody()
   or
   exists(Element mid |
-    inForeachStmtBody(loop, mid) and
+    inForEachStmtBody(loop, mid) and
     e = mid.getAChild()
   )
 }
@@ -52,23 +53,23 @@ module LambdaDataFlow {
     exists(DataFlow::Node sink | flow(DataFlow::exprNode(lambda), sink) |
       storage = getAssignmentTarget(sink.asExpr())
     ) and
-    exists(ForeachStmt loop | lambdaCapturesLoopVariable(lambda, loop, loopVar) |
+    exists(ForEachStmt loop | lambdaCapturesLoopVariable(lambda, loop, loopVar) |
       not declaredInsideLoop(loop, storage)
     )
   }
 }
 
 Element getAssignmentTarget(Expr e) {
-  exists(Assignment a | a.getRValue() = e |
-    result = a.getLValue().(PropertyAccess).getTarget() or
-    result = a.getLValue().(FieldAccess).getTarget() or
-    result = a.getLValue().(LocalVariableAccess).getTarget() or
-    result = a.getLValue().(EventAccess).getTarget()
+  exists(Assignment a | a.getRightOperand() = e |
+    result = a.getLeftOperand().(PropertyAccess).getTarget() or
+    result = a.getLeftOperand().(FieldAccess).getTarget() or
+    result = a.getLeftOperand().(LocalVariableAccess).getTarget() or
+    result = a.getLeftOperand().(EventAccess).getTarget()
   )
   or
   exists(AddEventExpr aee |
-    e = aee.getRValue() and
-    result = aee.getLValue().getTarget()
+    e = aee.getRightOperand() and
+    result = aee.getLeftOperand().getTarget()
   )
   or
   result = getCollectionAssignmentTarget(e)
@@ -96,15 +97,15 @@ Element getCollectionAssignmentTarget(Expr e) {
   // Store values using indexer
   exists(IndexerAccess ia, AssignExpr ae |
     ia.getQualifier() = result.(Variable).getAnAccess() and
-    ia = ae.getLValue() and
-    e = ae.getRValue()
+    ia = ae.getLeftOperand() and
+    e = ae.getRightOperand()
   )
 }
 
 // Variable v is declared inside the loop body
-predicate declaredInsideLoop(ForeachStmt loop, LocalVariable v) {
+predicate declaredInsideLoop(ForEachStmt loop, LocalVariable v) {
   exists(LocalVariableDeclStmt decl | decl.getVariableDeclExpr(_).getVariable() = v |
-    inForeachStmtBody(loop, decl)
+    inForEachStmtBody(loop, decl)
   )
 }
 

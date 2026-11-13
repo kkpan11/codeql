@@ -72,8 +72,8 @@ class AstDumper(object):
             # just not print it in that case.
             if field == "parenthesised" and value is None:
                 continue
-            # Likewise, the default value for `is_async` is `False`, so we don't need to print it.
-            if field == "is_async" and value is False:
+            # Likewise, the default value for `is_async` and `is_lazy` is `False`, so we don't need to print it.
+            if field in ("is_async", "is_lazy") and value is False:
                 continue
             output.write("{}  {}:".format(indent,field))
             if isinstance(value, list):
@@ -97,11 +97,30 @@ class AstDumper(object):
 
 
 class StdoutLogger(logging.Logger):
+    error_count = 0
     def log(self, level, fmt, *args):
-        sys.stdout.write(fmt % args + "\n")
+        sys.stdout.write(logging.format_message(fmt, args) + "\n")
+
+    def info(self, fmt, *args):
+        self.log(logging.INFO, fmt, *args)
+
+    def warning(self, fmt, *args):
+        self.log(logging.WARN, fmt, *args)
+        self.error_count += 1
+
+    def error(self, fmt, *args):
+        self.log(logging.ERROR, fmt, *args)
+        self.error_count += 1
+
+    def had_errors(self):
+        return self.error_count > 0
+
+    def reset_error_count(self):
+        self.error_count = 0
 
 def old_parser(inputfile, logger):
-    mod = PythonSourceModule(None, inputfile, logger)
+    from semmle.worker import DiagnosticsWriter
+    mod = PythonSourceModule(None, inputfile, logger, DiagnosticsWriter(0))
     logger.close()
     return mod.old_py_ast
 

@@ -5,12 +5,12 @@
 // by comparing the value to 0. This means that the cast cannot overflow,
 // regardless of what the input type is.
 
-int main(int argc, char **argv) {
+int main4(int argc, char **argv) {
   char *p = argv[0];
   if (!p[0]) {  // GOOD: cast to bool.
     return 1;
   }
-  if ((unsigned)p[1] == 0) {  // BAD: cast to unsigned could overflow.
+  if ((unsigned)p[1] == 0) {  // $ Alert[cpp/integer-overflow-tainted] // BAD: cast to unsigned could overflow.
     return 2;
   }
   if ((bool)p[2] != 0 || !p[3] == 1) {  // GOOD: casts to bool.

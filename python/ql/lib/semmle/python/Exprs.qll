@@ -1,6 +1,7 @@
-import python
-private import semmle.python.pointsto.PointsTo
-private import semmle.python.objects.ObjectInternal
+overlay[local]
+module;
+
+private import python
 private import semmle.python.internal.CachedStages
 
 /** An expression */
@@ -27,7 +28,9 @@ class Expr extends Expr_, AstNode {
   /** Whether this expression may have a side effect (as determined purely from its syntax) */
   predicate hasSideEffects() {
     /* If an exception raised by this expression handled, count that as a side effect */
-    this.getAFlowNode().getASuccessor().getNode() instanceof ExceptStmt
+    exists(ControlFlowNode n | n.getNode() = this |
+      n.getASuccessor().getNode() instanceof ExceptStmt
+    )
     or
     this.getASubExpression().hasSideEffects()
   }
@@ -52,67 +55,6 @@ class Expr extends Expr_, AstNode {
   Expr getASubExpression() { none() }
 
   override AstNode getAChildNode() { result = this.getASubExpression() }
-
-  /**
-   * NOTE: `refersTo` will be deprecated in 2019. Use `pointsTo` instead.
-   * Gets what this expression might "refer-to". Performs a combination of localized (intra-procedural) points-to
-   *  analysis and global module-level analysis. This points-to analysis favours precision over recall. It is highly
-   *  precise, but may not provide information for a significant number of flow-nodes.
-   *  If the class is unimportant then use `refersTo(value)` or `refersTo(value, origin)` instead.
-   * NOTE: For complex dataflow, involving multiple stages of points-to analysis, it may be more precise to use
-   * `ControlFlowNode.refersTo(...)` instead.
-   */
-  predicate refersTo(Object obj, ClassObject cls, AstNode origin) {
-    this.refersTo(_, obj, cls, origin)
-  }
-
-  /**
-   * NOTE: `refersTo` will be deprecated in 2019. Use `pointsTo` instead.
-   * Gets what this expression might "refer-to" in the given `context`.
-   */
-  predicate refersTo(Context context, Object obj, ClassObject cls, AstNode origin) {
-    this.getAFlowNode().refersTo(context, obj, cls, origin.getAFlowNode())
-  }
-
-  /**
-   * NOTE: `refersTo` will be deprecated in 2019. Use `pointsTo` instead.
-   * Holds if this expression might "refer-to" to `value` which is from `origin`
-   * Unlike `this.refersTo(value, _, origin)`, this predicate includes results
-   * where the class cannot be inferred.
-   */
-  pragma[nomagic]
-  predicate refersTo(Object obj, AstNode origin) {
-    this.getAFlowNode().refersTo(obj, origin.getAFlowNode())
-  }
-
-  /**
-   * NOTE: `refersTo` will be deprecated in 2019. Use `pointsTo` instead.
-   * Equivalent to `this.refersTo(value, _)`
-   */
-  predicate refersTo(Object obj) { this.refersTo(obj, _) }
-
-  /**
-   * Holds if this expression might "point-to" to `value` which is from `origin`
-   * in the given `context`.
-   */
-  predicate pointsTo(Context context, Value value, AstNode origin) {
-    this.getAFlowNode().pointsTo(context, value, origin.getAFlowNode())
-  }
-
-  /**
-   * Holds if this expression might "point-to" to `value` which is from `origin`.
-   */
-  predicate pointsTo(Value value, AstNode origin) {
-    this.getAFlowNode().pointsTo(value, origin.getAFlowNode())
-  }
-
-  /**
-   * Holds if this expression might "point-to" to `value`.
-   */
-  predicate pointsTo(Value value) { this.pointsTo(value, _) }
-
-  /** Gets a value that this expression might "point-to". */
-  Value pointsTo() { this.pointsTo(result) }
 }
 
 /** An assignment expression, such as `x := y` */
@@ -128,7 +70,7 @@ class Attribute extends Attribute_ {
   /* syntax: Expr.name */
   override Expr getASubExpression() { result = this.getObject() }
 
-  override AttrNode getAFlowNode() { result = super.getAFlowNode() }
+  deprecated override AttrNode getAFlowNode() { result = super.getAFlowNode() }
 
   /** Gets the name of this attribute. That is the `name` in `obj.name` */
   string getName() { result = Attribute_.super.getAttr() }
@@ -157,7 +99,7 @@ class Subscript extends Subscript_ {
 
   Expr getObject() { result = Subscript_.super.getValue() }
 
-  override SubscriptNode getAFlowNode() { result = super.getAFlowNode() }
+  deprecated override SubscriptNode getAFlowNode() { result = super.getAFlowNode() }
 }
 
 /** A call expression, such as `func(...)` */
@@ -173,7 +115,7 @@ class Call extends Call_ {
 
   override string toString() { result = this.getFunc().toString() + "()" }
 
-  override CallNode getAFlowNode() { result = super.getAFlowNode() }
+  deprecated override CallNode getAFlowNode() { result = super.getAFlowNode() }
 
   /** Gets a tuple (*) argument of this call. */
   Expr getStarargs() { result = this.getAPositionalArg().(Starred).getValue() }
@@ -261,7 +203,7 @@ class IfExp extends IfExp_ {
     result = this.getTest() or result = this.getBody() or result = this.getOrelse()
   }
 
-  override IfExprNode getAFlowNode() { result = super.getAFlowNode() }
+  deprecated override IfExprNode getAFlowNode() { result = super.getAFlowNode() }
 }
 
 /** A starred expression, such as the `*rest` in the assignment `first, *rest = seq` */
@@ -303,17 +245,12 @@ class Bytes extends StringLiteral {
   /* syntax: b"hello" */
   Bytes() { not this.isUnicode() }
 
-  override Object getLiteralObject() {
-    py_cobjecttypes(result, theBytesType()) and
-    py_cobjectnames(result, this.quotedString())
-  }
-
   /**
    * The extractor puts quotes into the name of each string (to prevent "0" clashing with 0).
    * The following predicate help us match up a string/byte literals in the source
    * which the equivalent object.
    */
-  private string quotedString() {
+  string quotedString() {
     exists(string b_unquoted | b_unquoted = this.getS() | result = "b'" + b_unquoted + "'")
   }
 }
@@ -329,11 +266,7 @@ class Ellipsis extends Ellipsis_ {
  * Consists of string (both unicode and byte) literals and numeric literals.
  */
 abstract class ImmutableLiteral extends Expr {
-  abstract Object getLiteralObject();
-
   abstract boolean booleanValue();
-
-  final Value getLiteralValue() { result.(ConstantObjectInternal).getLiteral() = this }
 }
 
 /** A numerical constant expression, such as `7` or `4.2` */
@@ -357,12 +290,6 @@ class IntegerLiteral extends Num {
 
   override string toString() { result = "IntegerLiteral" }
 
-  override Object getLiteralObject() {
-    py_cobjecttypes(result, theIntType()) and py_cobjectnames(result, this.getN())
-    or
-    py_cobjecttypes(result, theLongType()) and py_cobjectnames(result, this.getN())
-  }
-
   override boolean booleanValue() {
     this.getValue() = 0 and result = false
     or
@@ -381,10 +308,6 @@ class FloatLiteral extends Num {
   float getValue() { result = this.getN().toFloat() }
 
   override string toString() { result = "FloatLiteral" }
-
-  override Object getLiteralObject() {
-    py_cobjecttypes(result, theFloatType()) and py_cobjectnames(result, this.getN())
-  }
 
   override boolean booleanValue() {
     this.getValue() = 0.0 and result = false
@@ -408,10 +331,6 @@ class ImaginaryLiteral extends Num {
 
   override string toString() { result = "ImaginaryLiteral" }
 
-  override Object getLiteralObject() {
-    py_cobjecttypes(result, theComplexType()) and py_cobjectnames(result, this.getN())
-  }
-
   override boolean booleanValue() {
     this.getValue() = 0.0 and result = false
     or
@@ -430,11 +349,6 @@ class NegativeIntegerLiteral extends ImmutableLiteral, UnaryExpr {
 
   override boolean booleanValue() { result = this.getOperand().(IntegerLiteral).booleanValue() }
 
-  override Object getLiteralObject() {
-    (py_cobjecttypes(result, theIntType()) or py_cobjecttypes(result, theLongType())) and
-    py_cobjectnames(result, "-" + this.getOperand().(IntegerLiteral).getN())
-  }
-
   /**
    * Gets the (integer) value of this constant. Will not return a result if the value does not fit into
    * a 32 bit signed value
@@ -449,11 +363,6 @@ class NegativeIntegerLiteral extends ImmutableLiteral, UnaryExpr {
 class Unicode extends StringLiteral {
   /* syntax: "hello" */
   Unicode() { this.isUnicode() }
-
-  override Object getLiteralObject() {
-    py_cobjecttypes(result, theUnicodeType()) and
-    py_cobjectnames(result, this.quotedString())
-  }
 
   /**
    * Gets the quoted representation fo this string.
@@ -504,7 +413,7 @@ class PlaceHolder extends PlaceHolder_ {
 
   override string toString() { result = "$" + this.getId() }
 
-  override NameNode getAFlowNode() { result = super.getAFlowNode() }
+  deprecated override NameNode getAFlowNode() { result = super.getAFlowNode() }
 }
 
 /** A tuple expression such as `( 1, 3, 5, 7, 9 )` */
@@ -571,7 +480,7 @@ class Name extends Name_ {
 
   override string toString() { result = this.getId() }
 
-  override NameNode getAFlowNode() { result = super.getAFlowNode() }
+  deprecated override NameNode getAFlowNode() { result = super.getAFlowNode() }
 
   override predicate isArtificial() {
     /* Artificial variable names in comprehensions all start with "." */
@@ -658,12 +567,11 @@ class StringLiteral extends Str_, ImmutableLiteral {
     this.getText() != "" and result = true
   }
 
-  override Object getLiteralObject() { none() }
-
   override string toString() { result = "StringLiteral" }
 }
 
-private predicate name_consts(Name_ n, string id) {
+/** Holds if `n` is a named constant (`True`, `False`, or `None`) with name `id`. */
+predicate name_consts(Name_ n, string id) {
   exists(Variable v | py_variables(v, n) and id = v.getId() |
     id = "True" or id = "False" or id = "None"
   )
@@ -679,7 +587,7 @@ abstract class NameConstant extends Name, ImmutableLiteral {
 
   override predicate isConstant() { any() }
 
-  override NameConstantNode getAFlowNode() { result = Name.super.getAFlowNode() }
+  deprecated override NameConstantNode getAFlowNode() { result = Name.super.getAFlowNode() }
 
   override predicate isArtificial() { none() }
 }
@@ -692,8 +600,6 @@ class True extends BooleanLiteral {
   /* syntax: True */
   True() { name_consts(this, "True") }
 
-  override Object getLiteralObject() { name_consts(this, "True") and result = theTrueObject() }
-
   override boolean booleanValue() { result = true }
 }
 
@@ -701,8 +607,6 @@ class True extends BooleanLiteral {
 class False extends BooleanLiteral {
   /* syntax: False */
   False() { name_consts(this, "False") }
-
-  override Object getLiteralObject() { name_consts(this, "False") and result = theFalseObject() }
 
   override boolean booleanValue() { result = false }
 }
@@ -712,8 +616,6 @@ class None extends NameConstant {
   /* syntax: None */
   None() { name_consts(this, "None") }
 
-  override Object getLiteralObject() { name_consts(this, "None") and result = theNoneObject() }
-
   override boolean booleanValue() { result = false }
 }
 
@@ -721,6 +623,8 @@ class None extends NameConstant {
 class Await extends Await_ {
   /* syntax: await Expr */
   override Expr getASubExpression() { result = this.getValue() }
+
+  override predicate hasSideEffects() { any() }
 }
 
 /** A formatted string literal expression, such as `f'hello {world!s}'` */
@@ -744,6 +648,35 @@ class FormattedValue extends FormattedValue_ {
 class Guard extends Guard_ {
   /* syntax: if Expr */
   override Expr getASubExpression() { result = this.getTest() }
+}
+
+/** An annotation, such as the `int` part of `x: int` */
+class Annotation extends Expr {
+  Annotation() {
+    this = any(AnnAssign a).getAnnotation()
+    or
+    exists(Arguments args |
+      this in [
+          args.getAnAnnotation(),
+          args.getAKwAnnotation(),
+          args.getKwargannotation(),
+          args.getVarargannotation()
+        ]
+    )
+    or
+    this = any(FunctionExpr f).getReturns()
+  }
+
+  /** Gets the expression that this annotation annotates. */
+  Expr getAnnotatedExpression() {
+    result = any(AnnAssign a | a.getAnnotation() = this).getTarget()
+    or
+    result = any(Parameter p | p.getAnnotation() = this)
+    or
+    exists(FunctionExpr f, Return r |
+      this = f.getReturns() and r.getScope() = f.getInnerScope() and result = r.getValue()
+    )
+  }
 }
 
 /* Expression Contexts */

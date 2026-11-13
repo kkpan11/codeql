@@ -32,7 +32,6 @@ def test_construction():
         list(tainted_tuple), # $ tainted
         list(tainted_set), # $ tainted
         list(tainted_dict.values()), # $ tainted
-        list(tainted_dict.items()), # $ tainted
 
         tuple(tainted_list), # $ tainted
         set(tainted_list), # $ tainted
@@ -41,10 +40,11 @@ def test_construction():
         dict(k = tainted_string)["k"], # $ tainted
         dict(dict(k = tainted_string))["k"], # $ tainted
         dict(["k", tainted_string]), # $ tainted
+        list(tainted_dict.items()), # $ tainted
     )
 
     ensure_not_tainted(
-        dict(k = tainted_string)["k1"]
+        dict(k = tainted_string)["k1"],
     )
 
 
@@ -59,9 +59,9 @@ def test_access(x, y, z):
         sorted(tainted_list), # $ tainted
         reversed(tainted_list), # $ tainted
         iter(tainted_list), # $ tainted
-        next(iter(tainted_list)), # $ MISSING: tainted
+        next(iter(tainted_list)), # $ tainted
         [i for i in tainted_list], # $ tainted
-        [tainted_list for _i in [1,2,3]], # $ MISSING: tainted
+        [tainted_list for _i in [1,2,3]], # $ tainted
     )
 
     a, b, c = tainted_list[0:3]
@@ -85,7 +85,7 @@ def test_access_explicit(x, y, z):
         iter(tainted_list), # $ tainted
         next(iter(tainted_list)), # $ tainted
         [i for i in tainted_list], # $ tainted
-        [tainted_list for i in [1,2,3]], # $ MISSING: tainted
+        [tainted_list for i in [1,2,3]], # $ tainted
         [TAINTED_STRING for i in [1,2,3]], # $ tainted
         [tainted_list], # $ tainted
     )
@@ -166,6 +166,34 @@ def test_copy_2():
         copy.deepcopy(TAINTED_LIST), # $ tainted
     )
 
+def test_replace():
+    from copy import replace
+
+    class C:
+        def __init__(self, always_tainted, tainted_to_safe, safe_to_tainted, always_safe):
+            self.always_tainted = always_tainted
+            self.tainted_to_safe = tainted_to_safe
+            self.safe_to_tainted = safe_to_tainted
+            self.always_safe = always_safe
+
+    c = C(always_tainted=TAINTED_STRING,
+          tainted_to_safe=TAINTED_STRING,
+          safe_to_tainted=NOT_TAINTED,
+          always_safe=NOT_TAINTED)
+
+    d = replace(c, tainted_to_safe=NOT_TAINTED, safe_to_tainted=TAINTED_STRING)
+
+    ensure_tainted(d.always_tainted) # $ tainted
+    ensure_tainted(d.safe_to_tainted) # $ tainted
+    ensure_not_tainted(d.always_safe)
+
+    # Currently, we have no way of stopping the value in the tainted_to_safe field (which gets
+    # overwritten) from flowing through the replace call, which means we get a spurious result.
+
+    ensure_not_tainted(d.tainted_to_safe) # $ SPURIOUS: tainted
+
+
+
 
 def list_index_assign():
     tainted_string = TAINTED_STRING
@@ -204,6 +232,37 @@ def list_extend():
     ensure_not_tainted(my_list)
 
     my_list.extend(tainted_list)
+    ensure_tainted(my_list) # $ tainted
+
+
+def list_extend_iteration():
+    my_list = ["safe"]
+    tainted_list = [TAINTED_STRING]
+
+    ensure_not_tainted(my_list)
+
+    my_list.extend(tainted_list)
+    for x in my_list:
+        ensure_tainted(x) # $ tainted
+
+
+def list_insert():
+    tainted_string = TAINTED_STRING
+    my_list = ["safe"]
+
+    ensure_not_tainted(my_list)
+
+    my_list.insert(0, tainted_string)
+    ensure_tainted(my_list) # $ tainted
+
+
+def list_iadd():
+    my_list = ["safe"]
+    tainted_list = [TAINTED_STRING]
+
+    ensure_not_tainted(my_list)
+
+    my_list += tainted_list
     ensure_tainted(my_list) # $ MISSING: tainted
 
 
@@ -274,11 +333,15 @@ test_named_tuple()
 test_defaultdict("key", "key")
 test_copy_1()
 test_copy_2()
+test_replace()
 
 list_index_assign()
 list_index_aug_assign()
 list_append()
 list_extend()
+list_extend_iteration()
+list_insert()
+list_iadd()
 
 dict_update_dict()
 dict_update_kv_list()

@@ -4,7 +4,7 @@ public class HomeController : Controller
 {
     // BAD: Anti forgery token has been forgotten
     [HttpPost]
-    public ActionResult Login()
+    public ActionResult Login() // $ Alert
     {
         return View();
     }
@@ -27,5 +27,36 @@ public class HomeController : Controller
     [NonAction]
     public void UtilityMethod()
     {
+    }
+}
+
+// GOOD: Base class has ValidateAntiForgeryToken attribute
+[ValidateAntiForgeryToken]
+public abstract class BaseController : Controller
+{
+}
+
+public class DerivedController : BaseController
+{
+    // GOOD: Inherits antiforgery validation from base class
+    [HttpPost]
+    public ActionResult InheritedValidation()
+    {
+        return View();
+    }
+}
+
+// BAD: Base class without antiforgery attribute
+public abstract class UnprotectedBaseController : Controller
+{
+}
+
+public class DerivedUnprotectedController : UnprotectedBaseController
+{
+    // BAD: No antiforgery validation on this or any base class
+    [HttpPost]
+    public ActionResult NoInheritedValidation() // $ Alert
+    {
+        return View();
     }
 }

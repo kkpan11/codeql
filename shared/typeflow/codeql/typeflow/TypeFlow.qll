@@ -7,6 +7,8 @@
  * type has a subtype or if an inferred upper bound passed through at least one
  * explicit or implicit cast that lost type information.
  */
+overlay[local?]
+module;
 
 private import codeql.util.Location
 
@@ -28,14 +30,15 @@ signature module TypeFlowInput<LocationSig Location> {
   }
 
   /**
-   * Holds if data can flow from `n1` to `n2` in one step, and `n1` is not
-   * necessarily functionally determined by `n2`.
+   * Gets an identifier for node `n`, if any. When no identifier is provided for `n`,
+   * the library falls back to location-based ranking.
    */
-  predicate joinStep(TypeFlowNode n1, TypeFlowNode n2);
+  default int getTypeFlowNodeId(TypeFlowNode n) { none() }
 
   /**
-   * Holds if data can flow from `n1` to `n2` in one step, and `n1` is
-   * functionally determined by `n2`.
+   * Holds if data can flow from `n1` to `n2` in one step.
+   *
+   * For a given `n2`, this predicate must include all possible `n1` that can flow to `n2`.
    */
   predicate step(TypeFlowNode n1, TypeFlowNode n2);
 

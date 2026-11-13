@@ -1,3 +1,5 @@
+deprecated module;
+
 import java
 import semmle.code.java.security.Encryption
 import semmle.code.java.dataflow.TaintTracking
@@ -93,5 +95,5 @@ class UnsafeTlsVersion extends StringLiteral {
 }
 
 class SslServerSocket extends RefType {
-  SslServerSocket() { this.hasQualifiedName("javax.net.ssl", "SSLServerSocket") }
+  SslServerSocket() { this.hasQualifiedName(javaxOrJakarta() + ".net.ssl", "SSLServerSocket") }
 }

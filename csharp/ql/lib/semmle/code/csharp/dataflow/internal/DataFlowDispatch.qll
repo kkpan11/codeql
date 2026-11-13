@@ -8,14 +8,15 @@ private import semmle.code.csharp.dispatch.Dispatch
 private import semmle.code.csharp.dispatch.RuntimeCallable
 private import semmle.code.csharp.frameworks.system.Collections
 private import semmle.code.csharp.frameworks.system.collections.Generic
+private import semmle.code.csharp.internal.Location
 
 /**
- * Gets a source declaration of callable `c` that has a body or has
- * a flow summary.
+ * Gets a source declaration of callable `c` that has a body and is
+ * defined in source.
  */
 Callable getCallableForDataFlow(Callable c) {
   result = c.getUnboundDeclaration() and
-  result.hasBody() and
+  (result.hasBody() or result instanceof ObjectInitMethod) and
   result.getFile().fromSource()
 }
 
@@ -23,6 +24,27 @@ newtype TReturnKind =
   TNormalReturnKind() or
   TOutReturnKind(int i) { i = any(Parameter p | p.isOut()).getPosition() } or
   TRefReturnKind(int i) { i = any(Parameter p | p.isRef()).getPosition() }
+
+private predicate hasMultipleSourceLocations(Callable c) { strictcount(getASourceLocation(c)) > 1 }
+
+private predicate objectInitEntry(ObjectInitMethod m, ControlFlowElement first) {
+  exists(ControlFlow::EntryNode en |
+    en.getEnclosingCallable() = m and first = en.getASuccessor().getAstNode()
+  )
+}
+
+private module NearestBodyLocationInput implements NearestLocationInputSig {
+  class C = ControlFlowElement;
+
+  predicate relevantLocations(ControlFlowElement body, Location l1, Location l2) {
+    exists(Callable c |
+      hasMultipleSourceLocations(c) and
+      l1 = getASourceLocation(c) and
+      (body = c.getBody() or objectInitEntry(c, body)) and
+      l2 = body.getLocation()
+    )
+  }
+}
 
 cached
 private module Cached {
@@ -33,19 +55,30 @@ private module Cached {
    */
   cached
   newtype TDataFlowCallable =
-    TCallable(Callable c) { c.isUnboundDeclaration() } or
+    TCallable(Callable c, Location l) {
+      c.isUnboundDeclaration() and
+      l = [c.getLocation(), getASourceLocation(c)] and
+      (
+        not hasMultipleSourceLocations(c)
+        or
+        // when `c` has multiple source locations, only use those with a body;
+        // for example, `partial` methods may have multiple source locations but
+        // we are only interested in the one with a body
+        NearestLocation<NearestBodyLocationInput>::nearestLocation(_, l, _)
+      )
+    } or
     TSummarizedCallable(FlowSummary::SummarizedCallable sc) or
     TFieldOrPropertyCallable(FieldOrProperty f) or
     TCapturedVariableCallable(LocalScopeVariable v) { v.isCaptured() }
 
   cached
   newtype TDataFlowCall =
-    TNonDelegateCall(ControlFlow::Nodes::ElementNode cfn, DispatchCall dc) {
+    TNonDelegateCall(ControlFlowNodes::ElementNode cfn, DispatchCall dc) {
       DataFlowImplCommon::forceCachingInSameStage() and
-      cfn.getAstNode() = dc.getCall()
+      cfn.asExpr() = dc.getCall()
     } or
-    TExplicitDelegateLikeCall(ControlFlow::Nodes::ElementNode cfn, DelegateLikeCall dc) {
-      cfn.getAstNode() = dc
+    TExplicitDelegateLikeCall(ControlFlowNodes::ElementNode cfn, DelegateLikeCall dc) {
+      cfn.asExpr() = dc
     } or
     TSummaryCall(FlowSummary::SummarizedCallable c, FlowSummaryImpl::Private::SummaryNode receiver) {
       FlowSummaryImpl::Private::summaryCallbackRange(c, receiver)
@@ -82,17 +115,23 @@ private module DispatchImpl {
    */
   predicate mayBenefitFromCallContext(DataFlowCall call) { mayBenefitFromCallContext(call, _) }
 
+  bindingset[dc, result]
+  pragma[inline_late]
+  private Callable viableImplInCallContext0(DispatchCall dc, NonDelegateDataFlowCall ctx) {
+    result = dc.getADynamicTargetInCallContext(ctx.getDispatchCall()).getUnboundDeclaration()
+  }
+
   /**
    * Gets a viable dispatch target of `call` in the context `ctx`. This is
    * restricted to those `call`s for which a context might make a difference.
    */
   DataFlowCallable viableImplInCallContext(DataFlowCall call, DataFlowCall ctx) {
-    exists(DispatchCall dc | dc = call.(NonDelegateDataFlowCall).getDispatchCall() |
-      result.getUnderlyingCallable() =
-        getCallableForDataFlow(dc.getADynamicTargetInCallContext(ctx.(NonDelegateDataFlowCall)
-                .getDispatchCall()).getUnboundDeclaration())
+    exists(DispatchCall dc, Callable c | dc = call.(NonDelegateDataFlowCall).getDispatchCall() |
+      result = call.getARuntimeTarget() and
+      getCallableForDataFlow(c) = result.asCallable(_) and
+      c = viableImplInCallContext0(dc, ctx)
       or
-      exists(Callable c, DataFlowCallable encl |
+      exists(DataFlowCallable encl |
         result.asSummarizedCallable() = c and
         mayBenefitFromCallContext(call, encl) and
         encl = ctx.getARuntimeTarget() and
@@ -159,7 +198,74 @@ class RefReturnKind extends OutRefReturnKind, TRefReturnKind {
 /** A callable used for data flow. */
 class DataFlowCallable extends TDataFlowCallable {
   /** Gets the underlying source code callable, if any. */
-  Callable asCallable() { this = TCallable(result) }
+  Callable asCallable(Location l) { this = TCallable(result, l) }
+
+  /** Holds if the underlying callable is multi-bodied. */
+  pragma[nomagic]
+  predicate isMultiBodied() {
+    exists(Location l1, Location l2, DataFlowCallable other |
+      this.asCallable(l1) = other.asCallable(l2) and
+      l1 != l2
+    )
+  }
+
+  pragma[nomagic]
+  private BasicBlock getAMultiBodyEntryBlock() {
+    this.isMultiBodied() and
+    exists(ControlFlowElement body, Location l |
+      body = this.asCallable(l).getBody() or
+      objectInitEntry(this.asCallable(l), body)
+    |
+      NearestLocation<NearestBodyLocationInput>::nearestLocation(body, l, _) and
+      result.getANode().isBefore(body)
+    )
+  }
+
+  pragma[nomagic]
+  private BasicBlock getAMultiBodyControlFlowPred() {
+    result = this.getAMultiBodyEntryBlock().getAPredecessor()
+    or
+    result = this.getAMultiBodyControlFlowPred().getAPredecessor()
+  }
+
+  pragma[nomagic]
+  private BasicBlock getAMultiBodyBasicBlockSucc() {
+    result = this.getAMultiBodyEntryBlock().getASuccessor()
+    or
+    result = this.getAMultiBodyBasicBlockSucc().getASuccessor()
+  }
+
+  pragma[nomagic]
+  private BasicBlock getAMultiBodyBasicBlock() {
+    result =
+      [
+        this.getAMultiBodyEntryBlock(), this.getAMultiBodyControlFlowPred(),
+        this.getAMultiBodyBasicBlockSucc()
+      ]
+  }
+
+  pragma[inline]
+  private ControlFlowNode getAMultiBodyControlFlowNode() {
+    result = this.getAMultiBodyBasicBlock().getANode()
+  }
+
+  /** Gets a control flow node belonging to this callable. */
+  pragma[inline]
+  ControlFlowNode getAControlFlowNode() {
+    result = this.getAMultiBodyControlFlowNode()
+    or
+    not this.isMultiBodied() and
+    result.getEnclosingCallable() = this.asCallable(_)
+  }
+
+  /** Gets a basic block belonging to this callable. */
+  pragma[inline]
+  BasicBlock getABasicBlock() {
+    result = this.getAMultiBodyBasicBlock()
+    or
+    not this.isMultiBodied() and
+    result.getEnclosingCallable() = this.asCallable(_)
+  }
 
   /** Gets the underlying summarized callable, if any. */
   FlowSummary::SummarizedCallable asSummarizedCallable() { this = TSummarizedCallable(result) }
@@ -171,7 +277,7 @@ class DataFlowCallable extends TDataFlowCallable {
 
   /** Gets the underlying callable. */
   Callable getUnderlyingCallable() {
-    result = this.asCallable() or result = this.asSummarizedCallable()
+    result = this.asCallable(_) or result = this.asSummarizedCallable()
   }
 
   /** Gets a textual representation of this dataflow callable. */
@@ -185,21 +291,13 @@ class DataFlowCallable extends TDataFlowCallable {
 
   /** Get the location of this dataflow callable. */
   Location getLocation() {
-    result = this.getUnderlyingCallable().getLocation()
+    this = TCallable(_, result)
+    or
+    result = this.asSummarizedCallable().getLocation()
     or
     result = this.asFieldOrProperty().getLocation()
     or
     result = this.asCapturedVariable().getLocation()
-  }
-
-  /** Gets a best-effort total ordering. */
-  int totalorder() {
-    this =
-      rank[result](DataFlowCallable c, string file, int startline, int startcolumn |
-        c.getLocation().hasLocationInfo(file, startline, startcolumn, _, _)
-      |
-        c order by file, startline, startcolumn
-      )
   }
 }
 
@@ -212,7 +310,7 @@ abstract class DataFlowCall extends TDataFlowCall {
   abstract DataFlowCallable getARuntimeTarget();
 
   /** Gets the control flow node where this call happens, if any. */
-  abstract ControlFlow::Nodes::ElementNode getControlFlowNode();
+  abstract ControlFlowNodes::ElementNode getControlFlowNode();
 
   /** Gets the data flow node corresponding to this call, if any. */
   abstract DataFlow::Node getNode();
@@ -244,21 +342,31 @@ abstract class DataFlowCall extends TDataFlowCall {
   ) {
     this.getLocation().hasLocationInfo(filepath, startline, startcolumn, endline, endcolumn)
   }
-
-  /** Gets a best-effort total ordering. */
-  int totalorder() {
-    this =
-      rank[result](DataFlowCall c, int startline, int startcolumn |
-        c.hasLocationInfo(_, startline, startcolumn, _, _)
-      |
-        c order by startline, startcolumn
-      )
-  }
 }
+
+private predicate relevantFolder(Folder f) {
+  exists(NonDelegateDataFlowCall call, Location l | f = l.getFile().getParentContainer() |
+    l = call.getLocation() and
+    call.getARuntimeTargetCandidate(_, _).isMultiBodied()
+    or
+    call.getARuntimeTargetCandidate(l, _).isMultiBodied()
+  )
+}
+
+private predicate adjacentFolders(Folder f1, Folder f2) {
+  f1 = f2.getParentContainer()
+  or
+  f2 = f1.getParentContainer()
+}
+
+bindingset[f1, f2]
+pragma[inline_late]
+private predicate folderDist(Folder f1, Folder f2, int i) =
+  shortestDistances(relevantFolder/1, adjacentFolders/2)(f1, f2, i)
 
 /** A non-delegate C# call relevant for data flow. */
 class NonDelegateDataFlowCall extends DataFlowCall, TNonDelegateCall {
-  private ControlFlow::Nodes::ElementNode cfn;
+  private ControlFlowNodes::ElementNode cfn;
   private DispatchCall dc;
 
   NonDelegateDataFlowCall() { this = TNonDelegateCall(cfn, dc) }
@@ -266,33 +374,76 @@ class NonDelegateDataFlowCall extends DataFlowCall, TNonDelegateCall {
   /** Gets the underlying call. */
   DispatchCall getDispatchCall() { result = dc }
 
-  override DataFlowCallable getARuntimeTarget() {
-    result.asCallable() = getCallableForDataFlow(dc.getADynamicTarget())
-    or
-    exists(Callable c, boolean static |
-      result.asSummarizedCallable() = c and
-      c = this.getATarget(static)
+  pragma[nomagic]
+  private predicate hasSourceTarget() { dc.getAStaticTarget().fromSource() }
+
+  pragma[nomagic]
+  private FlowSummary::SummarizedCallable getASummarizedCallableTarget() {
+    // Only use summarized callables with generated summaries in case
+    // we are not able to dispatch to a source declaration.
+    exists(boolean static |
+      result = this.getATarget(static) and
+      if this.hasSourceTarget() then result.hasManualModel() else any()
     |
       static = false
       or
-      static = true and not c instanceof RuntimeCallable
+      static = true and not result instanceof RuntimeCallable
     )
+  }
+
+  pragma[nomagic]
+  DataFlowCallable getARuntimeTargetCandidate(Location l, Callable c) {
+    c = result.asCallable(l) and
+    c = getCallableForDataFlow(dc.getADynamicTarget())
+  }
+
+  pragma[nomagic]
+  private DataFlowCallable getAMultiBodiedRuntimeTargetCandidate(Callable c, int distance) {
+    result.isMultiBodied() and
+    exists(Location l | result = this.getARuntimeTargetCandidate(l, c) |
+      inSameFile(l, this.getLocation()) and
+      distance = -1
+      or
+      folderDist(l.getFile().getParentContainer(),
+        this.getLocation().getFile().getParentContainer(), distance)
+    )
+  }
+
+  pragma[nomagic]
+  override DataFlowCallable getARuntimeTarget() {
+    // For calls to multi-bodied methods, we restrict the viable targets to those
+    // that are closest to the call site, measured by file-system distance.
+    exists(Callable c |
+      result =
+        min(DataFlowCallable cand, int distance |
+          cand = this.getAMultiBodiedRuntimeTargetCandidate(c, distance)
+        |
+          cand order by distance
+        )
+    )
+    or
+    result = this.getARuntimeTargetCandidate(_, _) and
+    not result.isMultiBodied()
+    or
+    result.asSummarizedCallable() = this.getASummarizedCallableTarget()
   }
 
   /** Gets a static or dynamic target of this call. */
   Callable getATarget(boolean static) {
     result = dc.getADynamicTarget().getUnboundDeclaration() and static = false
     or
-    result = dc.getAStaticTarget().getUnboundDeclaration() and static = true
+    result = dc.getAStaticTarget().getUnboundDeclaration() and
+    static = true and
+    // In reflection calls, _all_ methods with matching names and arities are considered
+    // static targets, so we need to exclude them
+    not dc.isReflection()
   }
 
-  override ControlFlow::Nodes::ElementNode getControlFlowNode() { result = cfn }
+  override ControlFlowNodes::ElementNode getControlFlowNode() { result = cfn }
 
   override DataFlow::ExprNode getNode() { result.getControlFlowNode() = cfn }
 
-  override DataFlowCallable getEnclosingCallable() {
-    result.asCallable() = cfn.getEnclosingCallable()
-  }
+  override DataFlowCallable getEnclosingCallable() { result.getAControlFlowNode() = cfn }
 
   override string toString() { result = cfn.toString() }
 
@@ -304,7 +455,7 @@ abstract class DelegateDataFlowCall extends DataFlowCall { }
 
 /** An explicit delegate or function pointer call relevant for data flow. */
 class ExplicitDelegateLikeDataFlowCall extends DelegateDataFlowCall, TExplicitDelegateLikeCall {
-  private ControlFlow::Nodes::ElementNode cfn;
+  private ControlFlowNodes::ElementNode cfn;
   private DelegateLikeCall dc;
 
   ExplicitDelegateLikeDataFlowCall() { this = TExplicitDelegateLikeCall(cfn, dc) }
@@ -316,13 +467,11 @@ class ExplicitDelegateLikeDataFlowCall extends DelegateDataFlowCall, TExplicitDe
     none() // handled by the shared library
   }
 
-  override ControlFlow::Nodes::ElementNode getControlFlowNode() { result = cfn }
+  override ControlFlowNodes::ElementNode getControlFlowNode() { result = cfn }
 
   override DataFlow::ExprNode getNode() { result.getControlFlowNode() = cfn }
 
-  override DataFlowCallable getEnclosingCallable() {
-    result.asCallable() = cfn.getEnclosingCallable()
-  }
+  override DataFlowCallable getEnclosingCallable() { result.getAControlFlowNode() = cfn }
 
   override string toString() { result = cfn.toString() }
 
@@ -349,7 +498,7 @@ class SummaryCall extends DelegateDataFlowCall, TSummaryCall {
     none() // handled by the shared library
   }
 
-  override ControlFlow::Nodes::ElementNode getControlFlowNode() { none() }
+  override ControlFlowNodes::ElementNode getControlFlowNode() { none() }
 
   override DataFlow::Node getNode() { none() }
 

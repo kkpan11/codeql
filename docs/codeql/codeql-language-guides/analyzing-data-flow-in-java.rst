@@ -5,8 +5,6 @@ Analyzing data flow in Java and Kotlin
 
 You can use CodeQL to track the flow of data through a Java/Kotlin program to its use.
 
-.. include:: ../reusables/kotlin-beta-note.rst
-
 .. include:: ../reusables/kotlin-java-differences.rst
 
 About this article
@@ -76,8 +74,7 @@ Local taint tracking extends local data flow by including non-value-preserving f
 
 .. code-block:: java
 
-     String temp = x;
-     String y = temp + ", " + temp;
+     String y = "Hello " + x;
 
 If ``x`` is a tainted string then ``y`` is also tainted.
 
@@ -99,7 +96,7 @@ For example, you can find taint propagation from a parameter ``source`` to an ex
 Examples
 ~~~~~~~~
 
-This query finds the filename passed to ``new FileReader(..)``.
+This query finds the filename passed to ``new FileReader(..)``:
 
 .. code-block:: ql
 
@@ -125,7 +122,7 @@ Unfortunately, this only gives the expression in the argument, not the values wh
      DataFlow::localFlow(DataFlow::exprNode(src), DataFlow::exprNode(call.getArgument(0)))
    select src
 
-Then we can make the source more specific, for example an access to a public parameter. This query finds where a public parameter is passed to ``new FileReader(..)``:
+To restrict sources to only an access to a public parameter, rather than arbitrary expressions, we can modify this query as follows:
 
 .. code-block:: ql
 
@@ -139,7 +136,7 @@ Then we can make the source more specific, for example an access to a public par
      DataFlow::localFlow(DataFlow::parameterNode(p), DataFlow::exprNode(call.getArgument(0)))
    select p
 
-This query finds calls to formatting functions where the format string is not hard-coded.
+The following query finds calls to formatting functions where the format string is not hard-coded.
 
 .. code-block:: ql
 
@@ -147,7 +144,7 @@ This query finds calls to formatting functions where the format string is not ha
    import semmle.code.java.dataflow.DataFlow
    import semmle.code.java.StringFormat
 
-   from StringFormatMethod format, MethodAccess call, Expr formatString
+   from StringFormatMethod format, MethodCall call, Expr formatString
    where
      call.getMethod() = format and
      call.getArgument(format.getFormatStringIndex()) = formatString and
@@ -175,10 +172,11 @@ Global data flow tracks data flow throughout the entire program, and is therefor
 Using global data flow
 ~~~~~~~~~~~~~~~~~~~~~~
 
-You use the global data flow library by implementing the signature ``DataFlow::ConfigSig`` and applying the module ``DataFlow::Global<ConfigSig>``:
+We can use the global data flow library by implementing the signature ``DataFlow::ConfigSig`` and applying the module ``DataFlow::Global<ConfigSig>``:
 
 .. code-block:: ql
 
+   import java
    import semmle.code.java.dataflow.DataFlow
 
    module MyFlowConfiguration implements DataFlow::ConfigSig {
@@ -195,10 +193,11 @@ You use the global data flow library by implementing the signature ``DataFlow::C
 
 These predicates are defined in the configuration:
 
--  ``isSource``—defines where data may flow from
--  ``isSink``—defines where data may flow to
--  ``isBarrier``—optional, restricts the data flow
--  ``isAdditionalFlowStep``—optional, adds additional flow steps
+-  ``isSource`` - defines where data may flow from.
+-  ``isSink`` - defines where data may flow to.
+-  ``isBarrier`` - optional, defines where data flow is blocked.
+-  ``isAdditionalFlowStep`` - optional, adds additional flow steps.
+-  ``accessPathLimit`` - optional, sets the maximum length of access paths (see ":ref:`Access path limit <access-path-limit-java>`" below).
 
 The data flow analysis is performed using the predicate ``flow(DataFlow::Node source, DataFlow::Node sink)``:
 
@@ -208,13 +207,43 @@ The data flow analysis is performed using the predicate ``flow(DataFlow::Node so
    where MyFlow::flow(source, sink)
    select source, "Data flow to $@.", sink, sink.toString()
 
-Using global taint tracking
-~~~~~~~~~~~~~~~~~~~~~~~~~~~
+.. _access-path-limit-java:
 
-Global taint tracking is to global data flow as local taint tracking is to local data flow. That is, global taint tracking extends global data flow with additional non-value-preserving steps. You use the global taint tracking library by applying the module ``TaintTracking::Global<ConfigSig>`` to your configuration instead of ``DataFlow::Global<ConfigSig>``:
+Access path limit
+~~~~~~~~~~~~~~~~~
+
+The analysis can track data stored in a field, a collection element, or a map value. It records an *access path*: the sequence of fields, elements, or map values through which the data is reached. For example, after ``b.inner.val = source``, the data in ``b`` has the access path ``inner``, ``val``, of length 2. A value stored in a list inside another list also has an access path of length 2.
+
+To keep the analysis manageable, access paths have a maximum length. The default is 5, set by ``accessPathLimit()`` in the shared data flow library. Java and Kotlin use this default. A flow that needs a longer access path is not reported, and no warning is given.
+
+A configuration can change the limit by defining ``accessPathLimit``:
 
 .. code-block:: ql
 
+   module MyFlowConfiguration implements DataFlow::ConfigSig {
+     predicate isSource(DataFlow::Node source) {
+       ...
+     }
+
+     predicate isSink(DataFlow::Node sink) {
+       ...
+     }
+
+     int accessPathLimit() { result = 8 }
+   }
+
+For Java and Kotlin, you can increase the limit from the default of 5 to a maximum of 10. If you set a value above 10, the analysis uses 10 without warning.
+
+A higher limit can find more flows, but the analysis takes more time and memory.
+
+Using global taint tracking
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Global taint tracking is to global data flow what local taint tracking is to local data flow. That is, global taint tracking extends global data flow with additional non-value-preserving steps. You use the global taint tracking library by applying the module ``TaintTracking::Global<ConfigSig>`` to your configuration instead of ``DataFlow::Global<ConfigSig>``:
+
+.. code-block:: ql
+
+   import java
    import semmle.code.java.dataflow.TaintTracking
 
    module MyFlowConfiguration implements DataFlow::ConfigSig {
@@ -263,7 +292,7 @@ Exercise 2: Write a query that finds all hard-coded strings used to create a ``j
 
 Exercise 3: Write a class that represents flow sources from ``java.lang.System.getenv(..)``. (`Answer <#exercise-3>`__)
 
-Exercise 4: Using the answers from 2 and 3, write a query which finds all global data flows from ``getenv`` to ``java.net.URL``. (`Answer <#exercise-4>`__)
+Exercise 4: Using the answers from 2 and 3, write a query which finds all global data flow paths from ``getenv`` to ``java.net.URL``. (`Answer <#exercise-4>`__ `Answer as a path query <#path-query-example>`__)
 
 Answers
 -------
@@ -273,6 +302,7 @@ Exercise 1
 
 .. code-block:: ql
 
+   import java
    import semmle.code.java.dataflow.DataFlow
 
    from Constructor url, Call call, StringLiteral src
@@ -287,6 +317,7 @@ Exercise 2
 
 .. code-block:: ql
 
+   import java
    import semmle.code.java.dataflow.DataFlow
 
    module LiteralToURLConfig implements DataFlow::ConfigSig {
@@ -315,7 +346,7 @@ Exercise 3
 
    import java
 
-   class GetenvSource extends MethodAccess {
+   class GetenvSource extends MethodCall {
      GetenvSource() {
        exists(Method m | m = this.getMethod() |
          m.hasName("getenv") and
@@ -329,11 +360,12 @@ Exercise 4
 
 .. code-block:: ql
 
+   import java
    import semmle.code.java.dataflow.DataFlow
 
    class GetenvSource extends DataFlow::ExprNode {
      GetenvSource() {
-       exists(Method m | m = this.asExpr().(MethodAccess).getMethod() |
+       exists(Method m | m = this.asExpr().(MethodCall).getMethod() |
          m.hasName("getenv") and
          m.getDeclaringType() instanceof TypeSystem
        )
@@ -358,6 +390,54 @@ Exercise 4
    from DataFlow::Node src, DataFlow::Node sink
    where GetenvToURLFlow::flow(src, sink)
    select src, "This environment variable constructs a URL $@.", sink, "here"
+
+Path query example
+~~~~~~~~~~~~~~~~~~
+
+Here is the answer to exercise 4 above, converted into a path query:
+
+.. code-block:: ql
+
+   /**
+    * @kind path-problem
+    * @problem.severity warning
+    * @id getenv-to-url
+    */
+
+   import java
+   import semmle.code.java.dataflow.DataFlow
+
+   class GetenvSource extends DataFlow::ExprNode {
+     GetenvSource() {
+       exists(Method m | m = this.asExpr().(MethodCall).getMethod() |
+         m.hasName("getenv") and
+         m.getDeclaringType() instanceof TypeSystem
+       )
+     }
+   }
+
+   module GetenvToURLConfig implements DataFlow::ConfigSig {
+     predicate isSource(DataFlow::Node source) {
+       source instanceof GetenvSource
+     }
+
+     predicate isSink(DataFlow::Node sink) {
+       exists(Call call |
+         sink.asExpr() = call.getArgument(0) and
+         call.getCallee().(Constructor).getDeclaringType().hasQualifiedName("java.net", "URL")
+       )
+     }
+   }
+
+   module GetenvToURLFlow = DataFlow::Global<GetenvToURLConfig>;
+
+   import GetenvToURLFlow::PathGraph
+
+   from GetenvToURLFlow::PathNode src, GetenvToURLFlow::PathNode sink
+   where GetenvToURLFlow::flowPath(src, sink)
+   select src.getNode(), src, sink, "This environment variable constructs a URL $@.", sink, "here"
+
+For more information, see "`Creating path queries <https://codeql.github.com/docs/writing-codeql-queries/creating-path-queries/>`__".
 
 Further reading
 ---------------

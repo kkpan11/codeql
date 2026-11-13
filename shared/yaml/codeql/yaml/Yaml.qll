@@ -4,6 +4,8 @@
  * YAML documents are represented as abstract syntax trees whose nodes
  * are either YAML values or alias nodes referring to another YAML value.
  */
+overlay[local?]
+module;
 
 /** Provides the input specification of YAML implementation. */
 signature module InputSig {
@@ -131,6 +133,23 @@ signature module InputSig {
      * Typically `yaml_errors(this, result)`.
      */
     string getMessage();
+  }
+
+  /**
+   * A base class for comments.
+   *
+   * Typically `@yaml_comment`.
+   */
+  class CommentBase extends LocatableBase {
+    /**
+     * Gets the text of this comment, not including delimiters.
+     */
+    string getText();
+
+    /**
+     * Gets a textual representation of this comment.
+     */
+    string toString();
   }
 }
 
@@ -424,14 +443,24 @@ module Make<InputSig Input> {
      * Gets the absolute path of the file included by this directive.
      */
     private string getTargetPath() {
-      exists(string path | path = this.getValue() |
-        if path.matches("/%")
-        then result = path
-        else
-          result =
-            this.getDocument().getLocation().getFile().getParentContainer().getAbsolutePath() + "/" +
-              path
-      )
+      result = this.getAbsolutePath()
+      or
+      result =
+        this.getDocument().getLocation().getFile().getParentContainer().getAbsolutePath() + "/" +
+          this.getRelativePath()
+    }
+
+    /** Join-order helper for `getTargetPath`. Gets the path but only if it is an absolute path. */
+    private string getAbsolutePath() {
+      result = this.getValue() and
+      result.matches("/%")
+    }
+
+    /** Join-order helper for `getTargetPath`. Gets the path, but only if it is a relative path. */
+    pragma[noinline]
+    private string getRelativePath() {
+      result = this.getValue() and
+      not result.matches("/%")
     }
   }
 
@@ -593,6 +622,26 @@ module Make<InputSig Input> {
      * Get the string representation of this error.
      */
     string toString() { result = super.getMessage() }
+  }
+
+  /**
+   * A YAML comment.
+   *
+   * Example:
+   *
+   * ```
+   * # here is a comment
+   * ```
+   */
+  class YamlComment instanceof Input::CommentBase {
+    /** Gets the `Location` of this comment. */
+    Input::Location getLocation() { result = super.getLocation() }
+
+    /** Gets the text of this comment, not including delimiters. */
+    string getText() { result = super.getText() }
+
+    /** Gets a textual representation of this comment. */
+    string toString() { result = super.toString() }
   }
 
   /**

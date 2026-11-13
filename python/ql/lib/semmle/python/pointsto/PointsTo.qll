@@ -6,7 +6,13 @@ private import semmle.python.pointsto.PointsToContext
 private import semmle.python.pointsto.MRO
 private import semmle.python.types.Builtins
 private import semmle.python.types.Extensions
+private import semmle.python.pointsto.Context
 private import semmle.python.internal.CachedStages
+private import semmle.python.types.Object
+private import semmle.python.types.FunctionObject
+private import semmle.python.types.ClassObject
+private import semmle.python.pointsto.Base
+private import semmle.python.types.ImportTime
 
 /* Use this version for speed */
 class CfgOrigin extends @py_object {
@@ -705,11 +711,11 @@ private module InterModulePointsTo {
     ControlFlowNode f, PointsToContext context, ObjectInternal value, ControlFlowNode origin
   ) {
     exists(string name, ImportExpr i |
-      i.getAFlowNode() = f and
+      f.getNode() = i and
       i.getImportedModuleName() = name and
       PointsToInternal::module_imported_as(value, name) and
       origin = f and
-      context.appliesTo(f)
+      context.appliesTo(pragma[only_bind_into](f))
     )
   }
 
@@ -2112,8 +2118,9 @@ module Types {
     result.getBuiltin() = cls.getBuiltin().getBaseClass() and n = 0
     or
     exists(Class pycls | pycls = cls.(PythonClassObjectInternal).getScope() |
-      exists(ObjectInternal base |
-        PointsToInternal::pointsTo(pycls.getBase(n).getAFlowNode(), _, base, _)
+      exists(ObjectInternal base, ControlFlowNode baseNode |
+        baseNode.getNode() = pycls.getBase(n) and
+        PointsToInternal::pointsTo(baseNode, _, base, _)
       |
         result = base and base != ObjectInternal::unknown()
         or
@@ -2217,7 +2224,10 @@ module Types {
   }
 
   private ControlFlowNode decorator_call_callee(PythonClassObjectInternal cls) {
-    result = cls.getScope().getADecorator().getAFlowNode().(CallNode).getFunction()
+    exists(CallNode deco |
+      deco.getNode() = cls.getScope().getADecorator() and
+      result = deco.getFunction()
+    )
   }
 
   private boolean has_six_add_metaclass(PythonClassObjectInternal cls) {
@@ -2256,7 +2266,7 @@ module Types {
   }
 
   private EssaVariable metaclass_var(Class cls) {
-    result.getASourceUse() = cls.getMetaClass().getAFlowNode()
+    result.getASourceUse().getNode() = cls.getMetaClass()
     or
     major_version() = 2 and
     not exists(cls.getMetaClass()) and

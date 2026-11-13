@@ -1,3 +1,476 @@
+## 8.1.0
+
+### Deprecated APIs
+
+* `ControlFlow::ConditionGuardNode` is now deprecated. Use the API from `semmle.go.controlflow.Guards` instead.
+
+### New Features
+
+* The Go language library now instantiates the shared library `semmle.go.controlflow.Guards`, including the `Guard` and `GuardValue` classes and the `guardEnsures`, `guardEnsuresEq`, `guardEnsuresNeq`, and `guardEnsuresLeq` predicates.
+
+### Bug Fixes
+
+* The Go extractor no longer modifies the global Git configuration when private `git_source` registries are configured. The registry proxy certificate is now passed to Git through the `GIT_SSL_CAINFO` environment variable instead, which only affects the Git processes spawned by `go`.
+
+## 8.0.1
+
+No user-facing changes.
+
+## 8.0.0
+
+### Breaking Changes
+
+* The Go control flow graph (CFG) implementation has been completely rewritten
+  to use the shared CFG library. The CFG now includes additional nodes to more
+  accurately represent certain constructs, including assignments, function
+  parameters and results, range statements, and deferred calls. The CFG now
+  only includes nodes that are reachable from the entry point. Basic blocks are
+  also now constructed directly from the shared CFG. Existing code that relies
+  on specific CFG nodes, edges, locations, textual representations, or basic
+  block boundaries may need to be updated.  Additionally, the following API
+  changes have been made:
+  - `BasicBlocks::Cfg` has been removed. `BasicBlock` now directly uses the
+    basic-block implementation provided by the shared CFG library.
+  - `ControlFlow::EntryNode` and `ControlFlow::ExitNode` have been added, and
+    `ControlFlow::entryNode` and `ControlFlow::exitNode` now return these more
+    specific types.
+  - `IfStmt.getCond` has been deprecated. Please use the new `IfStmt.getCondition` instead.
+  - The result types of `IfStmt.getThen` and `LoopStmt.getBody` have been
+    widened from `BlockStmt` to `Stmt`.
+  - `SwitchStmt.getExpr` has been added, providing a common accessor for the
+    expression examined by expression and type switches.
+  - Several IR instruction classes have been removed or consolidated, including
+    `ReadArgumentInstruction`, `InitResultInstruction`, `IncDecInstruction`,
+    `EvalIncDecRhsInstruction`, `EvalImplicitOneInstruction`,
+    `SelectInstruction`, and `SendInstruction`.
+  - `EvalCompoundAssignRhsInstruction` now also represents increment and
+    decrement operations, and it and `EvalImplicitInitInstruction` directly
+    represent their associated writes.
+
+### Minor Analysis Improvements
+
+* Models for the `nhooyr.io/websocket` package have been updated to also support its new import path `github.com/coder/websocket`.
+
+## 7.3.2
+
+### Minor Analysis Improvements
+
+* Added or improved data flow models for the following Go standard-library APIs introduced or updated in Go 1.27:
+	* `bytes.CutLast`, `database/sql.ConvertAssign`, `database/sql/driver.RowsColumnScanner.ScanColumn`, `net/url.URL.Clone`, `net/url.Values.Clone` and `strings.CutLast`.
+	* The new `encoding/json/jsontext` package.
+* Added more data flow models for the `strings` package: `strings.Clone`, `Cut`, `CutPrefix`, `CutSuffix`, `Fields`, `FieldsFunc`, and `Join`; `strings.Builder.String`, `Builder.WriteByte`, and `Builder.WriteRune`; `strings.Reader.ReadByte` and `Reader.ReadRune`; and `strings.Replacer.Replace` and `Replacer.WriteString`.
+
+## 7.3.1
+
+No user-facing changes.
+
+## 7.3.0
+
+### Major Analysis Improvements
+
+* Go 1.27 is now supported.
+
+## 7.2.3
+
+No user-facing changes.
+
+## 7.2.2
+
+### Minor Analysis Improvements
+
+* The function `Rel` in `path/filepath` was incorrectly considered a sanitizer for `go/path-injection` and `go/zipslip`. This has now been fixed, which may lead to more results for those queries.
+
+## 7.2.1
+
+### Minor Analysis Improvements
+
+ * Improved models for the `log/slog` package (Go 1.21+), including `*slog.Logger` methods, `With`/`WithGroup`, and `Attr`/`Value` helpers, improving coverage for the `go/log-injection` and `go/clear-text-logging` queries.
+
+## 7.2.0
+
+### Deprecated APIs
+
+* `FuncTypeExpr.getResultDecl()` has been deprecated. Use `FuncTypeExpr.getResultDecl(int i)` instead.
+
+### Minor Analysis Improvements
+
+* Added models for the `log/slog` package (Go 1.21+). Its logging functions and
+  `*slog.Logger` methods (`Debug`/`Info`/`Warn`/`Error`, their `Context`
+  variants, and `Log`/`LogAttrs`) are now recognized as logging sinks, so the
+  `go/log-injection` and `go/clear-text-logging` queries cover code that logs
+  through `slog`.
+* `DataFlow::ResultNode`s are no longer created for returned expressions in functions with named result parameters. In this case there are already result nodes corresponding to `IR::ReadResultInstruction`s at the end of the function body.
+* `FuncTypeExpr.getNumResult()` now gets the number of result parameters. It previously got the number of result declarations, which is different when one result declaration declares more than one variable, as in `x, y int`. All uses of it expected the number of result parameters. Its QLDoc has been updated.
+* More logging functions are now recognized as not returning or panicking.
+
+## 7.1.2
+
+No user-facing changes.
+
+## 7.1.1
+
+No user-facing changes.
+
+## 7.1.0
+
+### New Features
+
+* Data flow barriers and barrier guards can now be added using data extensions. For more information see [Customizing library models for Go](https://codeql.github.com/docs/codeql-language-guides/customizing-library-models-for-go/).
+
+## 7.0.6
+
+No user-facing changes.
+
+## 7.0.5
+
+No user-facing changes.
+
+## 7.0.4
+
+No user-facing changes.
+
+## 7.0.3
+
+No user-facing changes.
+
+## 7.0.2
+
+### Minor Analysis Improvements
+
+* Inline expectations test comments, which are of the form `// $ tag` or `// $ tag=value`, are now parsed more strictly and will not be recognized if there isn't a space after the `$` symbol.
+
+## 7.0.1
+
+No user-facing changes.
+
+## 7.0.0
+
+### Breaking Changes
+
+* The `BasicBlock` class is now defined using the shared basic blocks library. `BasicBlock.getRoot` has been replaced by `BasicBlock.getScope`. `BasicBlock.getAPredecessor` and `BasicBlock.getASuccessor` now take a `SuccessorType` argument. `ReachableJoinBlock.inDominanceFrontierOf` has been removed, so use `BasicBlock.inDominanceFrontier` instead, swapping the receiver and the argument.
+
+### Major Analysis Improvements
+
+* Go 1.26 is now supported.
+
+## 6.0.1
+
+### Minor Analysis Improvements
+
+* The predicate `SummarizedCallable.propagatesFlow` has been extended with the columns `Provenance p` and `boolean isExact`, and as a consequence the predicates `SummarizedCallable.hasProvenance` and `SummarizedCallable.hasExactModel` have been removed.
+
+## 6.0.0
+
+### Breaking Changes
+
+* The query `go/unexpected-frontend-error` has been moved from the `codeql/go-queries` query to the `codeql-go-consistency-queries` query pack.
+
+### Minor Analysis Improvements
+
+* When a code-scanning configuration specifies the `paths:` and/or `paths-ignore:` settings, these are now taken into account by the Go extractor's search for `.vue` and HTML files.
+
+## 5.0.6
+
+No user-facing changes.
+
+## 5.0.5
+
+No user-facing changes.
+
+## 5.0.4
+
+No user-facing changes.
+
+## 5.0.3
+
+No user-facing changes.
+
+## 5.0.2
+
+### Bug Fixes
+
+* Some fixes relating to use of path transformers when extracting a database:
+  * Fixed a problem where the path transformer would be ignored when extracting older codebases that predate the use of Go modules.
+  * The environment variable `CODEQL_PATH_TRANSFORMER` is now recognized, in addition to `SEMMLE_PATH_TRANSFORMER`.
+  * Fixed some cases where the extractor emitted paths without applying the path transformer.
+
+## 5.0.1
+
+No user-facing changes.
+
+## 5.0.0
+
+### Breaking Changes
+
+* The member predicate `writesField` on `DataFlow::Write` now uses the post-update node for `base` when that is the node being updated, which is in all cases except initializing a struct literal. A new member predicate `writesFieldPreUpdate` has been added for cases where this behaviour is not desired.
+* The member predicate `writesElement` on `DataFlow::Write` now uses the post-update node for `base` when that is the node being updated, which is in all cases except initializing an array/slice/map literal. A new member predicate `writesElementPreUpdate` has been added for cases where this behaviour is not desired.
+
+### Deprecated APIs
+
+* The class `SqlInjection::NumericOrBooleanSanitizer` has been deprecated. Use `SimpleTypeSanitizer` from `semmle.go.security.Sanitizers` instead.
+* The member predicate `writesComponent` on `DataFlow::Write` has been deprecated. Instead, use `writesFieldPreUpdate` and `writesElementPreUpdate`, or their new versions `writesField` and `writesElement`.
+
+### Major Analysis Improvements
+
+* The shape of the Go data-flow graph has changed. Previously for code like `x := def(); use1(x); use2(x)`, there would be edges from the definition of `x` to each use. Now there is an edge from the definition to the first use, then another from the first use to the second, and so on. This means that data-flow barriers work differently - flow will not reach any uses after the barrier node. Where this is not desired it may be necessary to add an additional flow step to propagate the flow forward. Additionally, when a variable may be subject to a side-effect, such as updating an array, passing a pointer to a function that might write through it or writing to a field of a struct, there is now a dedicated post-update node representing the variable after this side-effect has taken place. Previously post-update nodes were aliases for either a variable's definition, or were equal to the pre-update node. This led to backwards steps in the data-flow graph, which could cause false positives. For example, in the previous code there would be an edge from `x` in `use2(x)` back to the definition of `x`. If we define our sources as any argument of `use2` and our sinks as any argument of `use1` then this would lead to a false positive path. Now there are distinct post-update nodes and no backwards edge to the definition, so we will not find this false positive path.
+
+### Minor Analysis Improvements
+
+* The query `go/request-forgery` will no longer report alerts when the user input is of a simple type, like a number or a boolean.
+* For the query `go/unvalidated-url-redirection`, when untrusted data is assigned to the `Host` field of a `url.URL` struct, we consider the whole struct untrusted. We now also include the case when this happens during struct initialization, for example `&url.URL{Host: untrustedData}`.
+* `go/unvalidated-url-redirection` and `go/request-forgery` have a shared notion of a safe URL, which is known to not be malicious. Some URLs which were incorrectly considered safe are now correctly considered unsafe. This may lead to more alerts for those two queries.
+
+## 4.3.5
+
+No user-facing changes.
+
+## 4.3.4
+
+### Minor Analysis Improvements
+
+* The second argument of the `CreateTemp` function, from the `os` package, is no longer a path-injection sink due to proper sanitization by Go.
+* The query "Uncontrolled data used in path expression" (`go/path-injection`) now detects sanitizing a path by adding `os.PathSeparator` or `\` to the beginning.
+
+## 4.3.3
+
+No user-facing changes.
+
+## 4.3.2
+
+### Minor Analysis Improvements
+
+* Go 1.25 is now supported.
+
+## 4.3.1
+
+No user-facing changes.
+
+## 4.3.0
+
+### Deprecated APIs
+
+* The class `BuiltinType` is now deprecated. Use the new replacement `BuiltinTypeEntity` instead.
+* The class `DeclaredType` is now deprecated. Use the new replacement `DeclaredTypeEntity` instead.
+
+### Minor Analysis Improvements
+
+* Added models for the `Head` function and the `Client.Head` method, from the `net/http` package, to the `Http::ClientRequest` class. This means that they will be recognized as sinks for the query `go/request-forgery` and the experimental query `go/ssrf`.
+* Previously, `DefinedType.getBaseType` gave the underlying type. It now gives the right hand side of the type declaration, as the documentation indicated that it should.
+
+## 4.2.8
+
+No user-facing changes.
+
+## 4.2.7
+
+### Minor Analysis Improvements
+
+* The first argument of `Client.Query` in `cloud.google.com/go/bigquery` is now recognized as a SQL injection sink.
+
+## 4.2.6
+
+No user-facing changes.
+
+## 4.2.5
+
+No user-facing changes.
+
+## 4.2.4
+
+No user-facing changes.
+
+## 4.2.3
+
+### Minor Analysis Improvements
+
+* Local source models for APIs reading from databases have been added for `github.com/gogf/gf/database/gdb` and `github.com/uptrace/bun`.
+
+## 4.2.2
+
+### Minor Analysis Improvements
+
+* We no longer track taint into a `sync.Map` via the key of a key-value pair, since we do not model any way in which keys can be read from a `sync.Map`.
+* `database` source models have been added for v1 and v2 of the `github.com/couchbase/gocb` package.
+* Added `database` source models for the `github.com/Masterminds/squirrel` ORM package.
+
+## 4.2.1
+
+No user-facing changes.
+
+## 4.2.0
+
+### Deprecated APIs
+
+* The member predicate `hasLocationInfo` has been deprecated on the following classes: `BasicBlock`, `Callable`, `Content`, `ContentSet`, `ControlFlow::Node`, `DataFlowCallable`, `DataFlow::Node`, `Entity`, `GVN`, `HtmlTemplate::TemplateStmt`, `IR:WriteTarget`, `SourceSinkInterpretationInput::SourceOrSinkElement`, `SourceSinkInterpretationInput::InterpretNode`, `SsaVariable`, `SsaDefinition`, `SsaWithFields`, `StringOps::ConcatenationElement`, `Type`, and `VariableWithFields`. Use `getLocation()` instead.
+
+### Minor Analysis Improvements
+
+* The location info for the following classes has been changed slightly to match a location that is in the database: `BasicBlock`, `ControlFlow::EntryNode`, `ControlFlow::ExitNode`, `ControlFlow::ConditionGuardNode`, `IR::ImplicitLiteralElementIndexInstruction`, `IR::EvalImplicitTrueInstruction`, `SsaImplicitDefinition`, `SsaPhiNode`.
+* Added `database` source models for the `github.com/rqlite/gorqlite` package.
+* Added `database` source models for database methods from the `go.mongodb.org/mongo-driver/mongo` package.
+
+## 4.1.0
+
+### Deprecated APIs
+
+* The class `NamedType` has been deprecated. Use the new class `DefinedType` instead. This better matches the terminology used in the Go language specification, which was changed in Go 1.9.
+* The member predicate `getNamedType` on `GoMicro::ServiceInterfaceType` has been deprecated. Use the new member predicate `getDefinedType` instead.
+* The member predicate `getNamedType` on `Twirp::ServiceInterfaceType` has been deprecated. Use the new member predicate `getDefinedType` instead.
+
+### Major Analysis Improvements
+
+* Go 1.24 is now supported. This includes the new language feature of generic type aliases.
+
+### Minor Analysis Improvements
+
+* Taint models have been added for the `weak` package, which was added in Go 1.24.
+* Taint models have been added for the interfaces `TextAppender` and `BinaryAppender` in the `encoding` package, which were added in Go 1.24.
+
+## 4.0.0
+
+### Breaking Changes
+
+* Deleted the deprecated `describeBitSize` predicate from `IncorrectIntegerConversionLib.qll`
+
+### Minor Analysis Improvements
+
+* Models-as-data models using "Parameter", "Parameter[n]" or "Parameter[n1..n2]" as the output now work correctly.
+* By implementing `ImplicitFieldReadNode` it is now possible to declare a dataflow node that reads any content (fields, array members, map keys and values). For example, this is appropriate for modelling a serialization method that flattens a potentially deep data structure into a string or byte array.
+* The `Template.Execute[Template]` methods of the `text/template` package now correctly convey taint from any nested fields to their result. This may produce more results from any taint-tracking query when the `text/template` package is in use.
+* Added the [rs cors](https://github.com/rs/cors) library to the CorsMisconfiguration.ql query
+
+## 3.0.2
+
+### Minor Analysis Improvements
+
+* `database` local source models have been added for the Beego ORM package.
+* `database` local source models have been added for the `github.com/jmoiron/sqlx` package.
+* Added `database` source models for database methods from the `gorm.io/gorm` package.
+* `database` local source models have been added for the `database/sql` and `database/sql/driver` packages.
+
+## 3.0.1
+
+### Minor Analysis Improvements
+
+* Added a `commandargs` local source model for the `os.Args` variable.
+
+## 3.0.0
+
+### Breaking Changes
+
+* Deleted the old deprecated data flow API that was based on extending a configuration class. See https://github.blog/changelog/2023-08-14-new-dataflow-api-for-writing-custom-codeql-queries for instructions on migrating your queries to use the new API.
+
+### Minor Analysis Improvements
+
+* A call to a method whose name starts with "Debug", "Error", "Fatal", "Info", "Log", "Output", "Panic", "Print", "Trace", "Warn" or "With" defined on an interface whose name ends in "logger" or "Logger" is now considered a LoggerCall. In particular, it is a sink for `go/clear-text-logging` and `go/log-injection`. This may lead to some more alerts in those queries.
+
+### Bug Fixes
+
+* Fixed a bug which meant that promoted fields and methods were missing when the embedded parent was not promoted due to a name clash.
+
+## 2.1.3
+
+### Minor Analysis Improvements
+
+* The `subtypes` column has been set to true in all models-as-data models except some tests. This means that existing models will apply in some cases where they didn't before, which may lead to more alerts.
+
+### Bug Fixes
+
+* The behaviour of the `subtypes` column in models-as-data now matches other languages more closely.
+* Fixed a bug which meant that some qualified names for promoted methods were not being recognised in some very specific circumstances.
+
+## 2.1.2
+
+### Minor Analysis Improvements
+
+* The AST viewer now shows type parameter declarations in the correct place in the AST.
+
+## 2.1.1
+
+### Minor Analysis Improvements
+
+* Added member predicates `StructTag.hasOwnFieldWithTag` and `Field.getTag`, which enable CodeQL queries to examine struct field tags.
+* Added member predicate `InterfaceType.hasPrivateMethodWithQualifiedName`, which enables CodeQL queries to distinguish interfaces with matching non-exported method names that are declared in different packages, and are therefore incompatible.
+* Local source models with the `stdin` source kind have been added for the variable `os.Stdin` and the functions `fmt.Scan`, `fmt.Scanf` and `fmt.Scanln`. You can optionally include threat models as appropriate when using the CodeQL CLI and in GitHub code scanning. For more information, see [Analyzing your code with CodeQL queries](https://docs.github.com/code-security/codeql-cli/getting-started-with-the-codeql-cli/analyzing-your-code-with-codeql-queries#including-model-packs-to-add-potential-sources-of-tainted-data>) and [Customizing your advanced setup for code scanning](https://docs.github.com/code-security/code-scanning/creating-an-advanced-setup-for-code-scanning/customizing-your-advanced-setup-for-code-scanning#extending-codeql-coverage-with-threat-models).
+
+## 2.1.0
+
+### Deprecated APIs
+
+* The class `ThreatModelFlowSource` has been renamed to `ActiveThreatModelSource` to more clearly reflect it only contains the currently active threat model sources. `ThreatModelFlowSource` has been marked as deprecated.
+
+### Minor Analysis Improvements
+
+* A method in the method set of an embedded field of a struct should not be promoted to the method set of the struct if the struct has a method with the same name. This was not being enforced, which meant that there were two methods with the same qualified name, and models were sometimes being applied when they shouldn't have been. This has now been fixed.
+
+## 2.0.0
+
+### Breaking Changes
+
+* Deleted many deprecated taint-tracking configurations based on `TaintTracking::Configuration`. 
+* Deleted the deprecated `explorationLimit` predicate from `DataFlow::Configuration`, use `FlowExploration<explorationLimit>` instead.
+
+### Minor Analysis Improvements
+
+* When a function or type has more than one anonymous type parameters, they were mistakenly being treated as the same type parameter. This has now been fixed.
+* Local source models for reading and parsing environment variables have been added for the following libraries:
+  * os
+  * syscall
+  * github.com/caarlos0/env
+  * github.com/gobuffalo/envy
+  * github.com/hashicorp/go-envparse
+  * github.com/joho/godotenv
+  * github.com/kelseyhightower/envconfig
+* Local source models have been added for the APIs which open files in the `io/fs`, `io/ioutil` and `os` packages in the Go standard library. You can optionally include threat models as appropriate when using the CodeQL CLI and in GitHub code scanning. For more information, see [Analyzing your code with CodeQL queries](https://docs.github.com/code-security/codeql-cli/getting-started-with-the-codeql-cli/analyzing-your-code-with-codeql-queries#including-model-packs-to-add-potential-sources-of-tainted-data>) and [Customizing your advanced setup for code scanning](https://docs.github.com/code-security/code-scanning/creating-an-advanced-setup-for-code-scanning/customizing-your-advanced-setup-for-code-scanning#extending-codeql-coverage-with-threat-models).
+
+### Bug Fixes
+
+* Golang vendor directories not at the root of a repository are now correctly excluded from the baseline Go file count. This means code coverage information will be more accurate.
+
+## 1.2.0
+
+### Major Analysis Improvements
+
+* Go 1.23 is now supported.
+
+## 1.1.5
+
+### Bug Fixes
+
+* Fixed an issue where `io/ioutil.WriteFile`'s non-path arguments incorrectly generated `go/path-injection` alerts when untrusted data was written to a file, or controlled the file's mode.
+
+## 1.1.4
+
+No user-facing changes.
+
+## 1.1.3
+
+### Minor Analysis Improvements
+
+* There was a bug which meant that the built-in function `clear` was considered as a sanitizer in some cases when it shouldn't have been. This has now been fixed, which may lead to more alerts.
+
+## 1.1.2
+
+### Minor Analysis Improvements
+
+* DataFlow queries which previously used `RemoteFlowSource` to define their sources have been modified to instead use `ThreatModelFlowSource`. This means these queries will now respect threat model configurations. The default threat model configuration is equivalent to `RemoteFlowSource`, so there should be no change in results for users using the default.
+* Added the `ThreatModelFlowSource` class to `FlowSources.qll`. The `ThreatModelFlowSource` class can be used to include sources which match the current *threat model* configuration. This is the first step in supporting threat modeling for Go.
+
+### Bug Fixes
+
+* Fixed dataflow via global variables other than via a direct write: for example, via a side-effect on a global, such as `io.copy(SomeGlobal, ...)` or via assignment to a field or array or slice cell of a global. This means that any data-flow query may return more results where global variables are involved.
+
+## 1.1.1
+
+No user-facing changes.
+
+## 1.1.0
+
+### New Features
+
+* When writing models-as-data models, the receiver is now referred to as `Argument[receiver]` rather than `Argument[-1]`.
+* Neutral models are now supported. They have no effect except that a manual neutral summary model will stop a generated summary model from having any effect.
+
 ## 1.0.0
 
 ### Breaking Changes

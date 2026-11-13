@@ -9,6 +9,8 @@ private import semmle.python.dataflow.new.DataFlow
 private import semmle.python.Concepts
 private import semmle.python.dataflow.new.RemoteFlowSources
 private import semmle.python.dataflow.new.BarrierGuards
+private import semmle.python.ApiGraphs
+private import semmle.python.frameworks.data.internal.ApiGraphModels
 
 /**
  * Provides default sources, sinks and sanitizers for detecting
@@ -44,9 +46,13 @@ module ServerSideRequestForgery {
   abstract class FullUrlControlSanitizer extends DataFlow::Node { }
 
   /**
-   * A source of remote user input, considered as a flow source.
+   * DEPRECATED: Use `ActiveThreatModelSource` from Concepts instead!
    */
-  class RemoteFlowSourceAsSource extends Source, RemoteFlowSource { }
+  deprecated class RemoteFlowSourceAsSource = ActiveThreatModelSourceAsSource;
+
+  /** An active threat-model source, considered as a flow source. */
+  private class ActiveThreatModelSourceAsSource extends Source instanceof ActiveThreatModelSource {
+  }
 
   /** The URL of an HTTP request, considered as a sink. */
   class HttpRequestUrlAsSink extends Sink {
@@ -71,9 +77,12 @@ module ServerSideRequestForgery {
   }
 
   /**
-   * A comparison with a constant string, considered as a sanitizer-guard.
+   * A comparison with a constant, considered as a sanitizer-guard.
    */
-  class StringConstCompareAsSanitizerGuard extends Sanitizer, StringConstCompareBarrier { }
+  class ConstCompareAsSanitizerGuard extends Sanitizer, ConstCompareBarrier { }
+
+  /** DEPRECATED: Use ConstCompareAsSanitizerGuard instead. */
+  deprecated class StringConstCompareAsSanitizerGuard = ConstCompareAsSanitizerGuard;
 
   /**
    * A string construction (concat, format, f-string) where the left side is not
@@ -136,5 +145,39 @@ module ServerSideRequestForgery {
         else fstring.getValue(any(int i | i >= 1)) = this.asExpr()
       )
     }
+  }
+
+  /** A validation that a string does not contain certain characters, considered as a sanitizer. */
+  private class StringRestrictionSanitizerGuard extends Sanitizer {
+    StringRestrictionSanitizerGuard() {
+      this = DataFlow::BarrierGuard<stringRestriction/3>::getABarrierNode()
+    }
+  }
+
+  private predicate stringRestriction(DataFlow::GuardNode g, ControlFlowNode node, boolean branch) {
+    exists(DataFlow::MethodCallNode call, DataFlow::Node strNode |
+      call.asCfgNode() = g and strNode.asCfgNode() = node
+    |
+      branch = true and
+      call.calls(strNode,
+        ["isalnum", "isalpha", "isdecimal", "isdigit", "isidentifier", "isnumeric", "isspace"])
+      or
+      branch = true and
+      call = API::moduleImport("re").getMember(["match", "prefixmatch", "fullmatch"]).getACall() and
+      strNode = [call.getArg(1), call.getArgByName("string")]
+      or
+      branch = true and
+      call =
+        API::moduleImport("re")
+            .getMember("compile")
+            .getReturn()
+            .getMember(["match", "prefixmatch", "fullmatch"])
+            .getACall() and
+      strNode = [call.getArg(0), call.getArgByName("string")]
+    )
+  }
+
+  private class ExternalRequestForgerySanitizer extends FullUrlControlSanitizer {
+    ExternalRequestForgerySanitizer() { ModelOutput::barrierNode(this, "request-forgery") }
   }
 }

@@ -166,6 +166,8 @@
  *
  *  `c`: [ListElementContent]
  */
+overlay[local]
+module;
 
 private import python
 private import DataFlowPublic
@@ -187,7 +189,7 @@ class ForTarget extends ControlFlowNode {
     )
     or
     exists(Comp comp |
-      source = comp.getIterable() and
+      source = comp.getFunction().getArg(0) and
       this.getNode() = comp.getNthInnerLoop(0).getTarget()
     )
   }

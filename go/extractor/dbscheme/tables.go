@@ -43,6 +43,17 @@ externalData(
 snapshotDate(unique date snapshotDate : date ref);
 
 sourceLocationPrefix(varchar(900) prefix : string ref);
+
+/** Overlay support **/
+
+databaseMetadata(
+  string metadataKey: string ref,
+  string value: string ref
+);
+
+overlayChangedFiles(
+  string path: string ref
+);
 `)
 
 // Copied directly from the XML dbscheme
@@ -521,6 +532,12 @@ var ChanTypeExprs = map[ast.ChanDir]*BranchType{
 	ast.SEND | ast.RECV: ExprKind.NewBranch("@sendrcvchantypeexpr", ChanTypeExpr),
 }
 
+// RangeElementExpr is the type of the synthesized node representing the loop
+// variables (key and value) bound by a `range` statement. It groups the key and
+// value expressions into a single "tuple pattern" target, mirroring how other
+// languages present a single variable node for a `foreach` loop.
+var RangeElementExpr = ExprKind.NewBranch("@rangeelementexpr")
+
 // StmtKind is a case type for distinguishing different kinds of statement AST nodes
 var StmtKind = NewCaseType(StmtType, "kind")
 
@@ -694,13 +711,13 @@ var BuiltinObjectType = NewUnionType("@builtinobject")
 // PkgObjectType is the type of imported packages
 var PkgObjectType = ObjectKind.NewBranch("@pkgobject")
 
-// TypeObjectType is the type of declared or built-in named types
+// TypeObjectType is the type of named types (predeclared types, defined types, type parameters and aliases which refer to those things)
 var TypeObjectType = NewUnionType("@typeobject")
 
-// DeclTypeObjectType is the type of declared named types
+// DeclTypeObjectType is the type of defined types, type parameters and aliases which refer to named types
 var DeclTypeObjectType = ObjectKind.NewBranch("@decltypeobject", TypeObjectType, DeclObjectType, TypeParamParentObjectType)
 
-// BuiltinTypeObjectType is the type of built-in named types
+// BuiltinTypeObjectType is the type of built-in types (predeclared types)
 var BuiltinTypeObjectType = ObjectKind.NewBranch("@builtintypeobject", TypeObjectType, BuiltinObjectType)
 
 // ValueObjectType is the type of declared or built-in variables or constants
@@ -855,8 +872,8 @@ var ChanTypes = map[gotypes.ChanDir]*BranchType{
 	gotypes.SendRecv: TypeKind.NewBranch("@sendrcvchantype", ChanType),
 }
 
-// NamedType is the type of named types
-var NamedType = TypeKind.NewBranch("@namedtype", CompositeType)
+// DefinedType is the type of defined types
+var DefinedType = TypeKind.NewBranch("@definedtype", CompositeType)
 
 // TypeSetLiteral is the type of type set literals
 var TypeSetLiteral = TypeKind.NewBranch("@typesetliteraltype", CompositeType)
@@ -979,6 +996,12 @@ var ExprsTable = NewTable("exprs",
 	IntColumn("idx"),
 ).KeySet("parent", "idx")
 
+// IsParenthesizedTable is the table associating expressions with how many parentheses they originally had
+var IsParenthesizedTable = NewTable("isParenthesized",
+	EntityColumn(ExprType, "id").Unique(),
+	IntColumn("parentheses"),
+)
+
 // LiteralsTable is the table associating literal expression AST nodes with their values
 var LiteralsTable = NewTable("literals",
 	EntityColumn(ExprType, "expr").Unique(),
@@ -1080,10 +1103,10 @@ var FieldStructsTable = NewTable("fieldstructs",
 	EntityColumn(StructType, "struct"),
 )
 
-// MethodHostsTable maps interface methods to the named type they belong to
+// MethodHostsTable maps interface methods to the defined type they belong to
 var MethodHostsTable = NewTable("methodhosts",
 	EntityColumn(ObjectType, "method"),
-	EntityColumn(NamedType, "host"),
+	EntityColumn(DefinedType, "host"),
 )
 
 // DefsTable maps identifiers to the objects they define
@@ -1110,7 +1133,7 @@ var TypeOfTable = NewTable("type_of",
 	EntityColumn(TypeType, "tp"),
 )
 
-// TypeNameTable is the table associating named types with their names
+// TypeNameTable is the table associating defined types with their names
 var TypeNameTable = NewTable("typename",
 	EntityColumn(TypeType, "tp").Unique(),
 	StringColumn("name"),
@@ -1135,10 +1158,10 @@ var BaseTypeTable = NewTable("base_type",
 	EntityColumn(TypeType, "tp"),
 )
 
-// UnderlyingTypeTable is the table associating named types with their
+// UnderlyingTypeTable is the table associating defined types with their
 // underlying type
 var UnderlyingTypeTable = NewTable("underlying_type",
-	EntityColumn(NamedType, "named").Unique(),
+	EntityColumn(DefinedType, "defined").Unique(),
 	EntityColumn(TypeType, "tp"),
 )
 
@@ -1149,6 +1172,20 @@ var ComponentTypesTable = NewTable("component_types",
 	StringColumn("name"),
 	EntityColumn(TypeType, "tp"),
 ).KeySet("parent", "index")
+
+// StructTagsTable is the table associating struct types with their component types' tags
+var StructTagsTable = NewTable("struct_tags",
+	EntityColumn(StructType, "parent"),
+	IntColumn("index"),
+	StringColumn("tag"),
+).KeySet("parent", "index")
+
+// InterfacePrivateMethodIdsTable is the table associating interface types with the indices and ids of their private methods.
+var InterfacePrivateMethodIdsTable = NewTable("interface_private_method_ids",
+	EntityColumn(InterfaceType, "interface"),
+	IntColumn("index"),
+	StringColumn("id"),
+).KeySet("interface", "index")
 
 // ArrayLengthTable is the table associating array types with their length (represented as a string
 // since Go array lengths are 64-bit and hence do not always fit into a QL integer)
@@ -1216,4 +1253,5 @@ var TypeParamTable = NewTable("typeparam",
 	EntityColumn(CompositeType, "bound"),
 	EntityColumn(TypeParamParentObjectType, "parent"),
 	IntColumn("idx"),
-).KeySet("parent", "idx")
+	BooleanColumn("is_from_recv"),
+).KeySet("parent", "idx", "is_from_recv")

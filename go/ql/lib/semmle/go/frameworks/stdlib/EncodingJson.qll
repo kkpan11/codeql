@@ -1,6 +1,8 @@
 /**
  * Provides classes modeling security-relevant aspects of the `encoding/json` package.
  */
+overlay[local?]
+module;
 
 import go
 
@@ -39,9 +41,15 @@ module EncodingJson {
     FunctionOutput outp;
 
     FunctionModels() {
-      // signature: func NewEncoder(w io.Writer) *Encoder
-      this.hasQualifiedName("encoding/json", "NewEncoder") and
-      (inp.isResult() and outp.isParameter(0))
+      (
+        // signature: func NewEncoder(w io.Writer) *Encoder
+        this.hasQualifiedName("encoding/json", "NewEncoder")
+        or
+        // signature: func NewEncoder(w io.Writer, opts ...Options) *Encoder
+        this.hasQualifiedName("encoding/json/jsontext", "NewEncoder")
+      ) and
+      inp.isResult() and
+      outp.isParameter(0)
     }
 
     override predicate hasTaintFlow(FunctionInput input, FunctionOutput output) {

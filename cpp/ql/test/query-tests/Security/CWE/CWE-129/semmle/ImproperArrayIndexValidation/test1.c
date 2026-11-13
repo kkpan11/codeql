@@ -4,18 +4,20 @@ void dosomething(char c);
 
 const char chr[26] = "abcdefghijklmnopqrstuvwxyz";
 
-int main(int argc, char *argv[]) {
+int main(int argc, char *argv[]) { // $ Source
   int i = atoi(argv[1]);
   test1(i);
   test2(i);
   test3(i);
   test4(i);
   test5(i);
+  test6(i);
+  test7(argv[1]);
 }
 
 void test1(int i) {
   // BAD: i has not been validated.
-  char c = chr[i];
+  char c = chr[i]; // $ Alert
   dosomething(c);
 }
 
@@ -30,7 +32,7 @@ void test2(int i) {
 int myArray[10];
 
 void test3(int i) {
-  myArray[i] = 0; // BAD: i has not been validated
+  myArray[i] = 0; // $ Alert // BAD: i has not been validated
 
   i = 5;
 
@@ -38,7 +40,7 @@ void test3(int i) {
 }
 
 void test4(int i) {
-  myArray[i] = 0; // BAD: i has not been validated [NOT REPORTED]
+  myArray[i] = 0; // $ Alert // BAD: i has not been validated
 
   if ((i < 0) || (i >= 10)) return;
 
@@ -50,5 +52,27 @@ void test5(int i) {
 
   j = i;
 
-  j = myArray[j]; // BAD: j has not been validated
+  j = myArray[j]; // $ Alert // BAD: j has not been validated
+}
+
+extern int myTable[256];
+
+void test6(int i) {
+  unsigned char s = i;
+
+  myTable[s] = 0; // GOOD: Input is small [FALSE POSITIVE]
+}
+
+typedef void FILE;
+#define EOF (-1)
+
+int getc(FILE*);
+
+extern int myMaxCharTable[256];
+
+void test7(FILE* fp) {
+  int ch;
+  while ((ch = getc(fp)) != EOF) {
+    myMaxCharTable[ch] = 0; // GOOD
+  }
 }

@@ -1,3 +1,6 @@
+overlay[local?]
+module;
+
 private import go
 private import DataFlowPrivate
 
@@ -8,9 +11,9 @@ private import DataFlowPrivate
 private predicate isInterfaceCallReceiver(
   DataFlow::CallNode call, DataFlow::Node recv, InterfaceType tp, string m
 ) {
-  call.getReceiver() = recv and
+  pragma[only_bind_out](call).getReceiver() = recv and
   recv.getType().getUnderlyingType() = tp and
-  m = call.getACalleeIncludingExternals().asFunction().getName()
+  m = pragma[only_bind_out](call).getACalleeIncludingExternals().asFunction().getName()
 }
 
 /** Gets a data-flow node that may flow into the receiver value of `call`, which is an interface value. */
@@ -119,6 +122,7 @@ class ArgumentPosition extends int {
 }
 
 /** Holds if arguments at position `apos` match parameters at position `ppos`. */
+overlay[caller?]
 pragma[inline]
 predicate parameterMatch(ParameterPosition ppos, ArgumentPosition apos) { ppos = apos }
 
@@ -130,6 +134,7 @@ private predicate isInterfaceMethod(Method c) {
  * Holds if `call` is passing `arg` to param `p` in any circumstance except passing
  * a receiver parameter to a concrete method.
  */
+overlay[caller?]
 pragma[inline]
 predicate golangSpecificParamArgFilter(
   DataFlowCall call, DataFlow::ParameterNode p, DataFlow::ArgumentNode arg

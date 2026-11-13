@@ -11,8 +11,10 @@ import (
 	"go/types"
 	"io"
 	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -30,7 +32,21 @@ import (
 )
 
 var MaxGoRoutines int
-var typeParamParent map[*types.TypeParam]types.Object = make(map[*types.TypeParam]types.Object)
+
+type typeParamParentEntry struct {
+	parent         types.Object
+	isFromReceiver bool
+}
+
+// typeParamMutex protects typeParamParent.
+var typeParamParentMutex sync.RWMutex
+
+var typeParamParent map[*types.TypeParam]typeParamParentEntry = make(map[*types.TypeParam]typeParamParentEntry)
+
+// typeParamMutex protects typeParamOrigin.
+var typeParamOriginMutex sync.RWMutex
+
+var typeParamOrigin map[*types.TypeParam]*types.TypeParam = make(map[*types.TypeParam]*types.TypeParam)
 
 func init() {
 	// this sets the number of threads that the Go runtime will spawn; this is separate
@@ -57,16 +73,68 @@ func init() {
 	}
 }
 
-// Extract extracts the packages specified by the given patterns
-func Extract(patterns []string) error {
-	return ExtractWithFlags(nil, patterns)
+// isExactTestPackage checks if a package ID represents an exact test match.
+// Returns true for IDs like "github.com/foo/bar [github.com/foo/bar.test]"
+// Returns false for IDs like "github.com/foo/bar [github.com/foo/bar/nested.test]"
+func isExactTestPackage(pkg *packages.Package) bool {
+	// Test packages have IDs in the format: "pkgpath [pkgpath.test]"
+	// or for nested test dependencies: "pkgpath [pkgpath/nested.test]"
+	expectedTestID := pkg.PkgPath + " [" + pkg.PkgPath + ".test]"
+	return pkg.ID == expectedTestID
+}
+
+// isBetterPackage determines if pkg is a better choice than current for extraction.
+// Preferences:
+// 1. Exact test package (e.g., "pkg [pkg.test]") over nested test dependencies
+// 2. More Syntax nodes (more files to extract)
+// 3. Longer ID string as tiebreaker
+func isBetterPackage(pkg, current *packages.Package) bool {
+	pkgIsExact := isExactTestPackage(pkg)
+	currentIsExact := isExactTestPackage(current)
+
+	// Prefer exact test packages
+	if pkgIsExact != currentIsExact {
+		return pkgIsExact
+	}
+
+	// Prefer packages with more syntax nodes (more files)
+	pkgSyntaxCount := len(pkg.Syntax)
+	currentSyntaxCount := len(current.Syntax)
+	if pkgSyntaxCount != currentSyntaxCount {
+		return pkgSyntaxCount > currentSyntaxCount
+	}
+
+	// Fall back to string length
+	return len(pkg.ID) > len(current.ID)
+}
+
+// selectBestPackages builds a map from package paths to their best package variants.
+// In the context of a `go test -c` compilation, we see the same package more than
+// once, with IDs like "abc.com/pkgname [abc.com/pkgname.test]" to distinguish the version
+// that contains and is used by test code.
+// We prefer the version with the most complete test coverage, which is typically:
+// 1. The exact test package (e.g., "pkg [pkg.test]") over nested test dependencies
+// 2. The package with the most Syntax nodes (most files to extract)
+// 3. The longest ID string as a tiebreaker
+func selectBestPackages(pkgs []*packages.Package) map[string]*packages.Package {
+	bestPackageIds := make(map[string]*packages.Package)
+	packages.Visit(pkgs, nil, func(pkg *packages.Package) {
+		if bestSoFar, present := bestPackageIds[pkg.PkgPath]; present {
+			if isBetterPackage(pkg, bestSoFar) {
+				bestPackageIds[pkg.PkgPath] = pkg
+			}
+		} else {
+			bestPackageIds[pkg.PkgPath] = pkg
+		}
+	})
+	return bestPackageIds
 }
 
 // ExtractWithFlags extracts the packages specified by the given patterns and build flags
-func ExtractWithFlags(buildFlags []string, patterns []string) error {
+func ExtractWithFlags(buildFlags []string, patterns []string, extractTests bool, sourceRoot string) error {
 	startTime := time.Now()
 
-	extraction := NewExtraction(buildFlags, patterns)
+	extraction := NewExtraction(buildFlags, patterns, sourceRoot)
 	defer extraction.StatWriter.Close()
 
 	modEnabled := os.Getenv("GO111MODULE") != "off"
@@ -81,7 +149,30 @@ func ExtractWithFlags(buildFlags []string, patterns []string) error {
 		}
 	}
 
-	log.Println("Running packages.Load.")
+	// If CODEQL_EXTRACTOR_GO_[OPTION_]EXTRACT_VENDOR_DIRS is "true", we extract `vendor` directories;
+	// otherwise (the default) is to exclude them from extraction
+	includeVendor, oldOptionUsed := util.IsVendorDirExtractionEnabled()
+
+	if oldOptionUsed {
+		log.Println("Warning: obsolete option \"CODEQL_EXTRACTOR_GO_EXTRACT_VENDOR_DIRS\" was set. Use \"CODEQL_EXTRACTOR_GO_OPTION_EXTRACT_VENDOR_DIRS\" or pass `--extractor-option extract_vendor_dirs=true` instead.")
+	}
+
+	modeNotifications := make([]string, 0, 2)
+	if extractTests {
+		modeNotifications = append(modeNotifications, "test extraction enabled")
+	}
+	if includeVendor {
+		modeNotifications = append(modeNotifications, "extracting vendor directories")
+	}
+
+	modeMessage := strings.Join(modeNotifications, ", ")
+	if modeMessage != "" {
+		modeMessage = " (" + modeMessage + ")"
+	}
+	log.Printf("Running packages.Load%s.", modeMessage)
+
+	// This includes test packages if either we're tracing a `go test` command,
+	// or if CODEQL_EXTRACTOR_GO_OPTION_EXTRACT_TESTS is set to "true".
 	cfg := &packages.Config{
 		Mode: packages.NeedName | packages.NeedFiles |
 			packages.NeedCompiledGoFiles |
@@ -89,6 +180,7 @@ func ExtractWithFlags(buildFlags []string, patterns []string) error {
 			packages.NeedTypes | packages.NeedTypesSizes |
 			packages.NeedTypesInfo | packages.NeedSyntax,
 		BuildFlags: buildFlags,
+		Tests:      extractTests,
 	}
 	pkgs, err := packages.Load(cfg, patterns...)
 	if err != nil {
@@ -123,7 +215,7 @@ func ExtractWithFlags(buildFlags []string, patterns []string) error {
 	if os.Getenv("CODEQL_EXTRACTOR_GO_FAST_PACKAGE_INFO") != "false" {
 		log.Printf("Running go list to resolve package and module directories.")
 		// get all packages information
-		pkgInfos, err = toolchain.GetPkgsInfo(patterns, true, modFlags...)
+		pkgInfos, err = toolchain.GetPkgsInfo(patterns, true, extractTests, modFlags...)
 		if err != nil {
 			log.Fatalf("Error getting dependency package or module directories: %v.", err)
 		}
@@ -132,15 +224,29 @@ func ExtractWithFlags(buildFlags []string, patterns []string) error {
 
 	pkgsNotFound := make([]string, 0, len(pkgs))
 
+	// Build a map from package paths to their best IDs
+	bestPackageIds := selectBestPackages(pkgs)
+
 	// Do a post-order traversal and extract the package scope of each package
 	packages.Visit(pkgs, nil, func(pkg *packages.Package) {
-		log.Printf("Processing package %s.", pkg.PkgPath)
+		// Note that if test extraction is enabled, we will encounter a package twice here:
+		// once as the main package, and once as the test package (with a package ID like
+		// "abc.com/pkgname [abc.com/pkgname.test]").
+		//
+		// We will extract it both times however, because we need to visit the packages
+		// in the right order in order to visit used types before their users, and the
+		// ordering determined by packages.Visit for the main and the test package may differ.
+		//
+		// This should only cause some wasted time and not inconsistency because the names for
+		// objects seen in this process should be the same each time.
+
+		slog.Debug("Processing package", "package", pkg.PkgPath)
 
 		if _, ok := pkgInfos[pkg.PkgPath]; !ok {
 			pkgInfos[pkg.PkgPath] = toolchain.GetPkgInfo(pkg.PkgPath, modFlags...)
 		}
 
-		log.Printf("Extracting types for package %s.", pkg.PkgPath)
+		slog.Debug("Extracting types for package", "package", pkg.PkgPath)
 
 		tw, err := trap.NewWriter(pkg.PkgPath, pkg)
 		if err != nil {
@@ -174,7 +280,7 @@ func ExtractWithFlags(buildFlags []string, patterns []string) error {
 	})
 
 	if len(pkgsNotFound) > 0 {
-		diagnostics.EmitCannotFindPackages(pkgsNotFound)
+		diagnostics.EmitCannotFindPackages(diagnostics.DefaultWriter, pkgsNotFound)
 	}
 
 	for _, pkg := range pkgs {
@@ -193,13 +299,33 @@ func ExtractWithFlags(buildFlags []string, patterns []string) error {
 	log.Println("Starting to extract packages.")
 
 	sep := regexp.QuoteMeta(string(filepath.Separator))
-	// if a path matches this regexp, we don't want to extract this package. Currently, it checks
-	//   - that the path does not contain a `..` segment, and
-	//   - the path does not contain a `vendor` directory.
-	noExtractRe := regexp.MustCompile(`.*(^|` + sep + `)(\.\.|vendor)($|` + sep + `).*`)
+
+	// Construct a list of directory segments to exclude from extraction, starting with ".."
+	excludedDirs := []string{`\.\.`}
+
+	if !includeVendor {
+		excludedDirs = append(excludedDirs, "vendor")
+	}
+
+	// If a path matches this regexp, we don't extract this package. It checks whether the path
+	// contains one of the `excludedDirs`.
+	noExtractRe := regexp.MustCompile(`.*(^|` + sep + `)(` + strings.Join(excludedDirs, "|") + `)($|` + sep + `).*`)
 
 	// extract AST information for all packages
 	packages.Visit(pkgs, nil, func(pkg *packages.Package) {
+
+		// If this is a variant of a package that also occurs with a better ID, skip it;
+		// otherwise we would extract the same file more than once including extracting the
+		// body of methods twice, causing database inconsistencies.
+		//
+		// We prefer the version with the most complete test coverage, prioritizing:
+		// 1. Exact test packages (e.g., "pkg [pkg.test]") over nested test dependencies
+		// 2. Packages with more Syntax nodes (more files to extract)
+		// 3. Longer ID strings as a tiebreaker
+		if pkg.ID != bestPackageIds[pkg.PkgPath].ID {
+			return
+		}
+
 		for root := range wantedRoots {
 			pkgInfo := pkgInfos[pkg.PkgPath]
 			relDir, err := filepath.Rel(root, pkgInfo.PkgDir)
@@ -250,16 +376,17 @@ func ExtractWithFlags(buildFlags []string, patterns []string) error {
 type Extraction struct {
 	// A lock for preventing concurrent writes to maps and the stat trap writer, as they are not
 	// thread-safe
-	Lock         sync.Mutex
-	LabelKey     string
-	Label        trap.Label
-	StatWriter   *trap.Writer
-	WaitGroup    sync.WaitGroup
-	GoroutineSem *semaphore
-	FdSem        *semaphore
-	NextFileId   int
-	FileInfo     map[string]*FileInfo
-	SeenGoMods   map[string]bool
+	Lock           sync.Mutex
+	LabelKey       string
+	Label          trap.Label
+	StatWriter     *trap.Writer
+	WaitGroup      sync.WaitGroup
+	GoroutineSem   *semaphore
+	FdSem          *semaphore
+	NextFileId     int
+	FileInfo       map[string]*FileInfo
+	SeenGoMods     map[string]bool
+	OverlayChanges map[string]bool
 }
 
 type FileInfo struct {
@@ -294,7 +421,7 @@ func (extraction *Extraction) GetNextErr(path string) int {
 	return res
 }
 
-func NewExtraction(buildFlags []string, patterns []string) *Extraction {
+func NewExtraction(buildFlags []string, patterns []string, sourceRoot string) *Extraction {
 	hash := md5.New()
 	io.WriteString(hash, "go")
 	for _, buildFlag := range buildFlags {
@@ -305,6 +432,22 @@ func NewExtraction(buildFlags []string, patterns []string) *Extraction {
 		io.WriteString(hash, " "+pattern)
 	}
 	sum := hash.Sum(nil)
+
+	overlayChangeList := util.GetOverlayChanges(sourceRoot)
+	var overlayChanges map[string]bool
+	if overlayChangeList == nil {
+		overlayChanges = nil
+	} else {
+		overlayChanges = make(map[string]bool)
+		for _, changedFilePath := range overlayChangeList {
+			absPath, err := filepath.Abs(changedFilePath)
+			if err != nil {
+				log.Fatalf("Error resolving absolute path of overlay change %s: %s", changedFilePath, err.Error())
+			}
+			overlayChanges[absPath] = true
+			slog.Info("Overlay changed file", "path", absPath)
+		}
+	}
 
 	i := 0
 	var path string
@@ -365,10 +508,11 @@ func NewExtraction(buildFlags []string, patterns []string) *Extraction {
 		FdSem: newSemaphore(100),
 		// this semaphore is used to limit the number of goroutines spawned, so we
 		// don't run into memory issues
-		GoroutineSem: newSemaphore(MaxGoRoutines),
-		NextFileId:   0,
-		FileInfo:     make(map[string]*FileInfo),
-		SeenGoMods:   make(map[string]bool),
+		GoroutineSem:   newSemaphore(MaxGoRoutines),
+		NextFileId:     0,
+		FileInfo:       make(map[string]*FileInfo),
+		SeenGoMods:     make(map[string]bool),
+		OverlayChanges: overlayChanges,
 	}
 }
 
@@ -400,15 +544,20 @@ func extractObjects(tw *trap.Writer, scope *types.Scope, scopeLabel trap.Label) 
 			// do not appear as objects in any scope, so they have to be dealt
 			// with separately in extractMethods.
 			if funcObj, ok := obj.(*types.Func); ok {
-				populateTypeParamParents(funcObj.Type().(*types.Signature).TypeParams(), obj)
-				populateTypeParamParents(funcObj.Type().(*types.Signature).RecvTypeParams(), obj)
+				populateTypeParamParentsFromFunction(funcObj)
 			}
-			// Populate type parameter parents for named types. Note that we
-			// skip type aliases as the original type should be the parent
-			// of any type parameters.
-			if typeNameObj, ok := obj.(*types.TypeName); ok && !typeNameObj.IsAlias() {
-				if tp, ok := typeNameObj.Type().(*types.Named); ok {
-					populateTypeParamParents(tp.TypeParams(), obj)
+			// Populate type parameter parents for defined types and alias types.
+			if typeNameObj, ok := obj.(*types.TypeName); ok {
+				// `types.TypeName` represents a type with a name: a defined
+				// type, an alias type, a type parameter, or a predeclared
+				// type such as `int` or `error`. We can distinguish these
+				// using `typeNameObj.Type()`, except that we need to be
+				// careful with alias types because before Go 1.24 they would
+				// return the underlying type.
+				if tp, ok := typeNameObj.Type().(*types.Named); ok && !typeNameObj.IsAlias() {
+					populateTypeParamParents(tp.TypeParams(), obj, false)
+				} else if tp, ok := typeNameObj.Type().(*types.Alias); ok {
+					populateTypeParamParents(tp.TypeParams(), obj, false)
 				}
 			}
 			extractObject(tw, obj, lbl)
@@ -434,8 +583,7 @@ func extractMethod(tw *trap.Writer, meth *types.Func) trap.Label {
 	if !exists {
 		// Populate type parameter parents for methods. They do not appear as
 		// objects in any scope, so they have to be dealt with separately here.
-		populateTypeParamParents(meth.Type().(*types.Signature).TypeParams(), meth)
-		populateTypeParamParents(meth.Type().(*types.Signature).RecvTypeParams(), meth)
+		populateTypeParamParentsFromFunction(meth)
 		extractObject(tw, meth, methlbl)
 	}
 
@@ -446,6 +594,7 @@ func extractMethod(tw *trap.Writer, meth *types.Func) trap.Label {
 // For more information on objects, see:
 // https://github.com/golang/example/blob/master/gotypes/README.md#objects
 func extractObject(tw *trap.Writer, obj types.Object, lbl trap.Label) {
+	checkObjectNotSpecialized(obj)
 	name := obj.Name()
 	isBuiltin := obj.Parent() == types.Universe
 	var kind int
@@ -495,7 +644,7 @@ func extractObject(tw *trap.Writer, obj types.Object, lbl trap.Label) {
 // For more information on objects, see:
 // https://github.com/golang/example/blob/master/gotypes/README.md#objects
 func extractObjectTypes(tw *trap.Writer) {
-	// calling `extractType` on a named type will extract all methods defined
+	// calling `extractType` on a defined type will extract all methods defined
 	// on it, which will add new objects. Therefore we need to do this first
 	// before we loop over all objects and emit them.
 	changed := true
@@ -629,7 +778,7 @@ func normalizedPath(ast *ast.File, fset *token.FileSet) string {
 	if err != nil {
 		return file
 	}
-	return path
+	return util.ResolvePath(path)
 }
 
 // extractFile extracts AST information for the given file
@@ -640,6 +789,16 @@ func (extraction *Extraction) extractFile(ast *ast.File, pkg *packages.Package) 
 		return nil
 	}
 	path := normalizedPath(ast, fset)
+	// If we're extracting an overlay, we want to skip extraction of files that haven't changed.
+	// Since some files may be outside the source directory (e.g. files preprocessed by cgo) we
+	// can't easily know if they have changed (or came from source files that changed), so we always
+	// extract a file if it's not in the package directory.
+	if extraction.OverlayChanges != nil &&
+		!extraction.OverlayChanges[path] &&
+		strings.HasPrefix(path+string(filepath.Separator), pkg.Dir) {
+		slog.Info("Skipping unchanged file in overlay extraction", "path", path)
+		return nil
+	}
 
 	extraction.FdSem.acquire(3)
 
@@ -694,18 +853,25 @@ func (extraction *Extraction) extractFileInfo(tw *trap.Writer, file string, isDu
 	var parentLbl trap.Label
 
 	for i, component := range components {
+		// displayPath is the same as rawPath except for root directories: if
+		// rawPath is "" then displayPath is "/"; if rawPath is "C:" then
+		// displayPath is "C:/".
+		var rawPath, displayPath string
 		if i == 0 {
-			if component == "" {
-				path = "/"
+			rawPath = component
+			if component == "" || regexp.MustCompile(`^[A-Za-z]:$`).MatchString(component) {
+				// Handle linux root and Windows drive letters by appending "/"
+				displayPath = rawPath + "/"
 			} else {
-				path = component
+				displayPath = rawPath
 			}
 		} else {
-			path = parentPath + "/" + component
+			rawPath = parentPath + "/" + component
+			displayPath = rawPath
 		}
 		if i == len(components)-1 {
 			lbl := tw.Labeler.FileLabelFor(file)
-			dbscheme.FilesTable.Emit(tw, lbl, path)
+			dbscheme.FilesTable.Emit(tw, lbl, displayPath)
 			dbscheme.ContainerParentTable.Emit(tw, parentLbl, lbl)
 			dbscheme.HasLocationTable.Emit(tw, lbl, emitLocation(tw, lbl, 0, 0, 0, 0))
 			extraction.Lock.Lock()
@@ -716,14 +882,12 @@ func (extraction *Extraction) extractFileInfo(tw *trap.Writer, file string, isDu
 			extraction.Lock.Unlock()
 			break
 		}
-		lbl := tw.Labeler.GlobalID(util.EscapeTrapSpecialChars(path) + ";folder")
-		dbscheme.FoldersTable.Emit(tw, lbl, path)
+		lbl := tw.Labeler.GlobalID(util.EscapeTrapSpecialChars(displayPath) + ";folder")
+		dbscheme.FoldersTable.Emit(tw, lbl, displayPath)
 		if i > 0 {
 			dbscheme.ContainerParentTable.Emit(tw, parentLbl, lbl)
 		}
-		if path != "/" {
-			parentPath = path
-		}
+		parentPath = rawPath
 		parentLbl = lbl
 	}
 }
@@ -857,11 +1021,27 @@ func emitScopeNodeInfo(tw *trap.Writer, nd ast.Node, lbl trap.Label) {
 
 // extractExpr extracts AST information for the given expression and all its subexpressions
 func extractExpr(tw *trap.Writer, expr ast.Expr, parent trap.Label, idx int, skipExtractingValue bool) {
-	if expr == nil {
+	if expr == nil || reflect.ValueOf(expr).IsNil() {
 		return
 	}
 
+	// Skip parenthesised expressions and extract their child directly in their place
+	nParens := 0
+	for {
+		paren, ok := expr.(*ast.ParenExpr)
+		if !ok {
+			break
+		}
+		nParens++
+		expr = paren.X
+	}
+
 	lbl := tw.Labeler.LocalID(expr)
+
+	if nParens > 0 {
+		dbscheme.IsParenthesizedTable.Emit(tw, lbl, nParens)
+	}
+
 	extractTypeOf(tw, expr, lbl)
 
 	var kind int
@@ -869,9 +1049,6 @@ func extractExpr(tw *trap.Writer, expr ast.Expr, parent trap.Label, idx int, ski
 	case *ast.BadExpr:
 		kind = dbscheme.BadExpr.Index()
 	case *ast.Ident:
-		if expr == nil {
-			return
-		}
 		kind = dbscheme.IdentExpr.Index()
 		dbscheme.LiteralsTable.Emit(tw, lbl, expr.Name, expr.Name)
 		def := tw.Package.TypesInfo.Defs[expr]
@@ -905,15 +1082,9 @@ func extractExpr(tw *trap.Writer, expr ast.Expr, parent trap.Label, idx int, ski
 			}
 		}
 	case *ast.Ellipsis:
-		if expr == nil {
-			return
-		}
 		kind = dbscheme.EllipsisExpr.Index()
 		extractExpr(tw, expr.Elt, lbl, 0, false)
 	case *ast.BasicLit:
-		if expr == nil {
-			return
-		}
 		value := ""
 		switch expr.Kind {
 		case token.INT:
@@ -937,36 +1108,18 @@ func extractExpr(tw *trap.Writer, expr ast.Expr, parent trap.Label, idx int, ski
 		}
 		dbscheme.LiteralsTable.Emit(tw, lbl, value, expr.Value)
 	case *ast.FuncLit:
-		if expr == nil {
-			return
-		}
 		kind = dbscheme.FuncLitExpr.Index()
 		extractExpr(tw, expr.Type, lbl, 0, false)
 		extractStmt(tw, expr.Body, lbl, 1)
 	case *ast.CompositeLit:
-		if expr == nil {
-			return
-		}
 		kind = dbscheme.CompositeLitExpr.Index()
 		extractExpr(tw, expr.Type, lbl, 0, false)
 		extractExprs(tw, expr.Elts, lbl, 1, 1)
-	case *ast.ParenExpr:
-		if expr == nil {
-			return
-		}
-		kind = dbscheme.ParenExpr.Index()
-		extractExpr(tw, expr.X, lbl, 0, false)
 	case *ast.SelectorExpr:
-		if expr == nil {
-			return
-		}
 		kind = dbscheme.SelectorExpr.Index()
 		extractExpr(tw, expr.X, lbl, 0, false)
 		extractExpr(tw, expr.Sel, lbl, 1, false)
 	case *ast.IndexExpr:
-		if expr == nil {
-			return
-		}
 		typeofx := typeOf(tw, expr.X)
 		if typeofx == nil {
 			// We are missing type information for `expr.X`, so we cannot
@@ -986,9 +1139,6 @@ func extractExpr(tw *trap.Writer, expr ast.Expr, parent trap.Label, idx int, ski
 		extractExpr(tw, expr.X, lbl, 0, false)
 		extractExpr(tw, expr.Index, lbl, 1, false)
 	case *ast.IndexListExpr:
-		if expr == nil {
-			return
-		}
 		typeofx := typeOf(tw, expr.X)
 		if typeofx == nil {
 			// We are missing type information for `expr.X`, so we cannot
@@ -1005,18 +1155,12 @@ func extractExpr(tw *trap.Writer, expr ast.Expr, parent trap.Label, idx int, ski
 		extractExpr(tw, expr.X, lbl, 0, false)
 		extractExprs(tw, expr.Indices, lbl, 1, 1)
 	case *ast.SliceExpr:
-		if expr == nil {
-			return
-		}
 		kind = dbscheme.SliceExpr.Index()
 		extractExpr(tw, expr.X, lbl, 0, false)
 		extractExpr(tw, expr.Low, lbl, 1, false)
 		extractExpr(tw, expr.High, lbl, 2, false)
 		extractExpr(tw, expr.Max, lbl, 3, false)
 	case *ast.TypeAssertExpr:
-		if expr == nil {
-			return
-		}
 		kind = dbscheme.TypeAssertExpr.Index()
 		extractExpr(tw, expr.X, lbl, 0, false)
 		// expr.Type can be `nil` if this is the `x.(type)` in a type switch.
@@ -1024,9 +1168,6 @@ func extractExpr(tw *trap.Writer, expr ast.Expr, parent trap.Label, idx int, ski
 			extractExpr(tw, expr.Type, lbl, 1, false)
 		}
 	case *ast.CallExpr:
-		if expr == nil {
-			return
-		}
 		kind = dbscheme.CallOrConversionExpr.Index()
 		extractExpr(tw, expr.Fun, lbl, 0, false)
 		extractExprs(tw, expr.Args, lbl, 1, 1)
@@ -1034,22 +1175,13 @@ func extractExpr(tw *trap.Writer, expr ast.Expr, parent trap.Label, idx int, ski
 			dbscheme.HasEllipsisTable.Emit(tw, lbl)
 		}
 	case *ast.StarExpr:
-		if expr == nil {
-			return
-		}
 		kind = dbscheme.StarExpr.Index()
 		extractExpr(tw, expr.X, lbl, 0, false)
 	case *ast.KeyValueExpr:
-		if expr == nil {
-			return
-		}
 		kind = dbscheme.KeyValueExpr.Index()
 		extractExpr(tw, expr.Key, lbl, 0, false)
 		extractExpr(tw, expr.Value, lbl, 1, false)
 	case *ast.UnaryExpr:
-		if expr == nil {
-			return
-		}
 		if expr.Op == token.TILDE {
 			kind = dbscheme.TypeSetLiteralExpr.Index()
 		} else {
@@ -1061,9 +1193,6 @@ func extractExpr(tw *trap.Writer, expr ast.Expr, parent trap.Label, idx int, ski
 		}
 		extractExpr(tw, expr.X, lbl, 0, false)
 	case *ast.BinaryExpr:
-		if expr == nil {
-			return
-		}
 		_, isUnionType := typeOf(tw, expr).(*types.Union)
 		if expr.Op == token.OR && isUnionType {
 			kind = dbscheme.TypeSetLiteralExpr.Index()
@@ -1079,46 +1208,28 @@ func extractExpr(tw *trap.Writer, expr ast.Expr, parent trap.Label, idx int, ski
 			extractExpr(tw, expr.Y, lbl, 1, false)
 		}
 	case *ast.ArrayType:
-		if expr == nil {
-			return
-		}
 		kind = dbscheme.ArrayTypeExpr.Index()
 		extractExpr(tw, expr.Len, lbl, 0, false)
 		extractExpr(tw, expr.Elt, lbl, 1, false)
 	case *ast.StructType:
-		if expr == nil {
-			return
-		}
 		kind = dbscheme.StructTypeExpr.Index()
 		extractFields(tw, expr.Fields, lbl, 0, 1)
 	case *ast.FuncType:
-		if expr == nil {
-			return
-		}
 		kind = dbscheme.FuncTypeExpr.Index()
 		extractFields(tw, expr.Params, lbl, 0, 1)
 		extractFields(tw, expr.Results, lbl, -1, -1)
 		emitScopeNodeInfo(tw, expr, lbl)
 	case *ast.InterfaceType:
-		if expr == nil {
-			return
-		}
 		kind = dbscheme.InterfaceTypeExpr.Index()
 		// expr.Methods contains methods, embedded interfaces and type set
 		// literals.
 		makeTypeSetLiteralsUnionTyped(tw, expr.Methods)
 		extractFields(tw, expr.Methods, lbl, 0, 1)
 	case *ast.MapType:
-		if expr == nil {
-			return
-		}
 		kind = dbscheme.MapTypeExpr.Index()
 		extractExpr(tw, expr.Key, lbl, 0, false)
 		extractExpr(tw, expr.Value, lbl, 1, false)
 	case *ast.ChanType:
-		if expr == nil {
-			return
-		}
 		tp := dbscheme.ChanTypeExprs[expr.Dir]
 		if tp == nil {
 			log.Fatalf("unsupported channel direction %v", expr.Dir)
@@ -1220,7 +1331,7 @@ func extractFields(tw *trap.Writer, fields *ast.FieldList, parent trap.Label, id
 // extractStmt extracts AST information for a given statement and all other statements or expressions
 // nested inside it
 func extractStmt(tw *trap.Writer, stmt ast.Stmt, parent trap.Label, idx int) {
-	if stmt == nil {
+	if stmt == nil || reflect.ValueOf(stmt).IsNil() {
 		return
 	}
 
@@ -1230,37 +1341,22 @@ func extractStmt(tw *trap.Writer, stmt ast.Stmt, parent trap.Label, idx int) {
 	case *ast.BadStmt:
 		kind = dbscheme.BadStmtType.Index()
 	case *ast.DeclStmt:
-		if stmt == nil {
-			return
-		}
 		kind = dbscheme.DeclStmtType.Index()
 		extractDecl(tw, stmt.Decl, lbl, 0)
 	case *ast.EmptyStmt:
 		kind = dbscheme.EmptyStmtType.Index()
 	case *ast.LabeledStmt:
-		if stmt == nil {
-			return
-		}
 		kind = dbscheme.LabeledStmtType.Index()
 		extractExpr(tw, stmt.Label, lbl, 0, false)
 		extractStmt(tw, stmt.Stmt, lbl, 1)
 	case *ast.ExprStmt:
-		if stmt == nil {
-			return
-		}
 		kind = dbscheme.ExprStmtType.Index()
 		extractExpr(tw, stmt.X, lbl, 0, false)
 	case *ast.SendStmt:
-		if stmt == nil {
-			return
-		}
 		kind = dbscheme.SendStmtType.Index()
 		extractExpr(tw, stmt.Chan, lbl, 0, false)
 		extractExpr(tw, stmt.Value, lbl, 1, false)
 	case *ast.IncDecStmt:
-		if stmt == nil {
-			return
-		}
 		if stmt.Tok == token.INC {
 			kind = dbscheme.IncStmtType.Index()
 		} else if stmt.Tok == token.DEC {
@@ -1270,9 +1366,6 @@ func extractStmt(tw *trap.Writer, stmt ast.Stmt, parent trap.Label, idx int) {
 		}
 		extractExpr(tw, stmt.X, lbl, 0, false)
 	case *ast.AssignStmt:
-		if stmt == nil {
-			return
-		}
 		tp := dbscheme.AssignStmtTypes[stmt.Tok]
 		if tp == nil {
 			log.Fatalf("unsupported assignment statement with operator %v", stmt.Tok)
@@ -1281,24 +1374,15 @@ func extractStmt(tw *trap.Writer, stmt ast.Stmt, parent trap.Label, idx int) {
 		extractExprs(tw, stmt.Lhs, lbl, -1, -1)
 		extractExprs(tw, stmt.Rhs, lbl, 1, 1)
 	case *ast.GoStmt:
-		if stmt == nil {
-			return
-		}
 		kind = dbscheme.GoStmtType.Index()
 		extractExpr(tw, stmt.Call, lbl, 0, false)
 	case *ast.DeferStmt:
-		if stmt == nil {
-			return
-		}
 		kind = dbscheme.DeferStmtType.Index()
 		extractExpr(tw, stmt.Call, lbl, 0, false)
 	case *ast.ReturnStmt:
 		kind = dbscheme.ReturnStmtType.Index()
 		extractExprs(tw, stmt.Results, lbl, 0, 1)
 	case *ast.BranchStmt:
-		if stmt == nil {
-			return
-		}
 		switch stmt.Tok {
 		case token.BREAK:
 			kind = dbscheme.BreakStmtType.Index()
@@ -1313,16 +1397,10 @@ func extractStmt(tw *trap.Writer, stmt ast.Stmt, parent trap.Label, idx int) {
 		}
 		extractExpr(tw, stmt.Label, lbl, 0, false)
 	case *ast.BlockStmt:
-		if stmt == nil {
-			return
-		}
 		kind = dbscheme.BlockStmtType.Index()
 		extractStmts(tw, stmt.List, lbl, 0, 1)
 		emitScopeNodeInfo(tw, stmt, lbl)
 	case *ast.IfStmt:
-		if stmt == nil {
-			return
-		}
 		kind = dbscheme.IfStmtType.Index()
 		extractStmt(tw, stmt.Init, lbl, 0)
 		extractExpr(tw, stmt.Cond, lbl, 1, false)
@@ -1330,35 +1408,23 @@ func extractStmt(tw *trap.Writer, stmt ast.Stmt, parent trap.Label, idx int) {
 		extractStmt(tw, stmt.Else, lbl, 3)
 		emitScopeNodeInfo(tw, stmt, lbl)
 	case *ast.CaseClause:
-		if stmt == nil {
-			return
-		}
 		kind = dbscheme.CaseClauseType.Index()
 		extractExprs(tw, stmt.List, lbl, -1, -1)
 		extractStmts(tw, stmt.Body, lbl, 0, 1)
 		emitScopeNodeInfo(tw, stmt, lbl)
 	case *ast.SwitchStmt:
-		if stmt == nil {
-			return
-		}
 		kind = dbscheme.ExprSwitchStmtType.Index()
 		extractStmt(tw, stmt.Init, lbl, 0)
 		extractExpr(tw, stmt.Tag, lbl, 1, false)
 		extractStmt(tw, stmt.Body, lbl, 2)
 		emitScopeNodeInfo(tw, stmt, lbl)
 	case *ast.TypeSwitchStmt:
-		if stmt == nil {
-			return
-		}
 		kind = dbscheme.TypeSwitchStmtType.Index()
 		extractStmt(tw, stmt.Init, lbl, 0)
 		extractStmt(tw, stmt.Assign, lbl, 1)
 		extractStmt(tw, stmt.Body, lbl, 2)
 		emitScopeNodeInfo(tw, stmt, lbl)
 	case *ast.CommClause:
-		if stmt == nil {
-			return
-		}
 		kind = dbscheme.CommClauseType.Index()
 		extractStmt(tw, stmt.Comm, lbl, 0)
 		extractStmts(tw, stmt.Body, lbl, 1, 1)
@@ -1367,9 +1433,6 @@ func extractStmt(tw *trap.Writer, stmt ast.Stmt, parent trap.Label, idx int) {
 		kind = dbscheme.SelectStmtType.Index()
 		extractStmt(tw, stmt.Body, lbl, 0)
 	case *ast.ForStmt:
-		if stmt == nil {
-			return
-		}
 		kind = dbscheme.ForStmtType.Index()
 		extractStmt(tw, stmt.Init, lbl, 0)
 		extractExpr(tw, stmt.Cond, lbl, 1, false)
@@ -1377,12 +1440,19 @@ func extractStmt(tw *trap.Writer, stmt ast.Stmt, parent trap.Label, idx int) {
 		extractStmt(tw, stmt.Body, lbl, 3)
 		emitScopeNodeInfo(tw, stmt, lbl)
 	case *ast.RangeStmt:
-		if stmt == nil {
-			return
-		}
 		kind = dbscheme.RangeStmtType.Index()
-		extractExpr(tw, stmt.Key, lbl, 0, false)
-		extractExpr(tw, stmt.Value, lbl, 1, false)
+		// Synthesize a "range element" node that groups the loop variables (the
+		// key and value) into a single target. This mirrors how other languages
+		// present a single loop-variable node for a `foreach` loop and lets the
+		// shared control-flow library drive the destructuring through this node.
+		patternLbl := tw.Labeler.FreshID()
+		dbscheme.ExprsTable.Emit(tw, patternLbl, dbscheme.RangeElementExpr.Index(), lbl, 0)
+		// The range element node uses the location of the whole range statement,
+		// so that the destructuring control-flow and data-flow nodes derived from
+		// it keep the same location they had before this node was introduced.
+		extractNodeLocation(tw, stmt, patternLbl)
+		extractExpr(tw, stmt.Key, patternLbl, 0, false)
+		extractExpr(tw, stmt.Value, patternLbl, 1, false)
 		extractExpr(tw, stmt.X, lbl, 2, false)
 		extractStmt(tw, stmt.Body, lbl, 3)
 		emitScopeNodeInfo(tw, stmt, lbl)
@@ -1407,15 +1477,15 @@ func extractStmts(tw *trap.Writer, stmts []ast.Stmt, parent trap.Label, idx int,
 
 // extractDecl extracts AST information for the given declaration
 func extractDecl(tw *trap.Writer, decl ast.Decl, parent trap.Label, idx int) {
+	if reflect.ValueOf(decl).IsNil() {
+		return
+	}
 	lbl := tw.Labeler.LocalID(decl)
 	var kind int
 	switch decl := decl.(type) {
 	case *ast.BadDecl:
 		kind = dbscheme.BadDeclType.Index()
 	case *ast.GenDecl:
-		if decl == nil {
-			return
-		}
 		switch decl.Tok {
 		case token.IMPORT:
 			kind = dbscheme.ImportDeclType.Index()
@@ -1433,9 +1503,6 @@ func extractDecl(tw *trap.Writer, decl ast.Decl, parent trap.Label, idx int) {
 		}
 		extractDoc(tw, decl.Doc, lbl)
 	case *ast.FuncDecl:
-		if decl == nil {
-			return
-		}
 		kind = dbscheme.FuncDeclType.Index()
 		extractFields(tw, decl.Recv, lbl, -1, -1)
 		extractExpr(tw, decl.Name, lbl, 0, false)
@@ -1500,6 +1567,7 @@ func extractSpec(tw *trap.Writer, spec ast.Spec, parent trap.Label, idx int) {
 // extractType extracts type information for `tp` and returns its associated label;
 // types are only extracted once, so the second time `extractType` is invoked it simply returns the label
 func extractType(tw *trap.Writer, tp types.Type) trap.Label {
+	tp = types.Unalias(tp)
 	lbl, exists := getTypeLabel(tw, tp)
 	if !exists {
 		var kind int
@@ -1520,7 +1588,7 @@ func extractType(tw *trap.Writer, tp types.Type) trap.Label {
 		case *types.Struct:
 			kind = dbscheme.StructType.Index()
 			for i := 0; i < tp.NumFields(); i++ {
-				field := tp.Field(i)
+				field := tp.Field(i).Origin()
 
 				// ensure the field is associated with a label - note that
 				// struct fields do not have a parent scope, so they are not
@@ -1537,6 +1605,9 @@ func extractType(tw *trap.Writer, tp types.Type) trap.Label {
 					name = ""
 				}
 				extractComponentType(tw, lbl, i, name, field.Type())
+				if tp.Tag(i) != "" {
+					dbscheme.StructTagsTable.Emit(tw, lbl, i, tp.Tag(i))
+				}
 			}
 		case *types.Pointer:
 			kind = dbscheme.PointerType.Index()
@@ -1544,13 +1615,20 @@ func extractType(tw *trap.Writer, tp types.Type) trap.Label {
 		case *types.Interface:
 			kind = dbscheme.InterfaceType.Index()
 			for i := 0; i < tp.NumMethods(); i++ {
-				meth := tp.Method(i)
+				// Note that methods coming from embedded interfaces can be
+				// accessed through `Method(i)`, so there is no need to
+				// deal with them separately.
+				meth := tp.Method(i).Origin()
 
 				// Note that methods do not have a parent scope, so they are
 				// not dealt with by `extractScopes`
 				extractMethod(tw, meth)
 
 				extractComponentType(tw, lbl, i, meth.Name(), meth.Type())
+
+				if !meth.Exported() {
+					dbscheme.InterfacePrivateMethodIdsTable.Emit(tw, lbl, i, meth.Id())
+				}
 			}
 			for i := 0; i < tp.NumEmbeddeds(); i++ {
 				component := tp.EmbeddedType(i)
@@ -1591,11 +1669,10 @@ func extractType(tw *trap.Writer, tp types.Type) trap.Label {
 			extractElementType(tw, lbl, tp.Elem())
 		case *types.Named:
 			origintp := tp.Origin()
-			kind = dbscheme.NamedType.Index()
+			kind = dbscheme.DefinedType.Index()
 			dbscheme.TypeNameTable.Emit(tw, lbl, origintp.Obj().Name())
 			underlying := origintp.Underlying()
 			extractUnderlyingType(tw, lbl, underlying)
-			trackInstantiatedStructFields(tw, tp, origintp)
 
 			entitylbl, exists := tw.Labeler.LookupObjectID(origintp.Obj(), lbl)
 			if entitylbl == trap.InvalidLabel {
@@ -1610,23 +1687,35 @@ func extractType(tw *trap.Writer, tp types.Type) trap.Label {
 			// ensure all methods have labels - note that methods do not have a
 			// parent scope, so they are not dealt with by `extractScopes`
 			for i := 0; i < origintp.NumMethods(); i++ {
-				meth := origintp.Method(i)
-
+				meth := origintp.Method(i).Origin()
 				extractMethod(tw, meth)
+				populateTypeParamParentsAndOrigins(tp.Method(i), meth)
 			}
 
+			underlyingInterface, underlyingIsInterface := underlying.(*types.Interface)
+			_, underlyingIsPointer := underlying.(*types.Pointer)
+
 			// associate all methods of underlying interface with this type
-			if underlyingInterface, ok := underlying.(*types.Interface); ok {
+			if underlyingIsInterface {
 				for i := 0; i < underlyingInterface.NumMethods(); i++ {
-					methlbl := extractMethod(tw, underlyingInterface.Method(i))
+					methlbl := extractMethod(tw, underlyingInterface.Method(i).Origin())
 					dbscheme.MethodHostsTable.Emit(tw, methlbl, lbl)
 				}
 			}
+
+			// If `underlying` is not a pointer or interface then methods can
+			// be defined on `origintp`. In this case we must ensure that
+			// `*origintp` is in the database, so that Method.hasQualifiedName
+			// correctly includes methods with receiver type `*origintp`.
+			if !underlyingIsInterface && !underlyingIsPointer {
+				extractType(tw, types.NewPointer(origintp))
+			}
 		case *types.TypeParam:
 			kind = dbscheme.TypeParamType.Index()
-			parentlbl := getTypeParamParentLabel(tw, tp)
-			constraintLabel := extractType(tw, tp.Constraint())
-			dbscheme.TypeParamTable.Emit(tw, lbl, tp.Obj().Name(), constraintLabel, parentlbl, tp.Index())
+			parentlbl, isReceiverChild := getTypeParamParentLabel(tw, tp)
+			constraint := getTypeParamOrigin(tp).Constraint()
+			constraintLabel := extractType(tw, constraint)
+			dbscheme.TypeParamTable.Emit(tw, lbl, tp.Obj().Name(), constraintLabel, parentlbl, tp.Index(), isReceiverChild)
 		case *types.Union:
 			kind = dbscheme.TypeSetLiteral.Index()
 			for i := 0; i < tp.Len(); i++ {
@@ -1652,10 +1741,11 @@ func extractType(tw *trap.Writer, tp types.Type) trap.Label {
 // Type labels refer to global keys to ensure that if the same type is
 // encountered during the extraction of different files it is still ultimately
 // mapped to the same entity. In particular, this means that keys for compound
-// types refer to the labels of their component types. For named types, the key
+// types refer to the labels of their component types. For defined types, the key
 // is constructed from their globally unique ID. This prevents cyclic type keys
-// since type recursion in Go always goes through named types.
+// since type recursion in Go always goes through defined types.
 func getTypeLabel(tw *trap.Writer, tp types.Type) (trap.Label, bool) {
+	tp = types.Unalias(tp)
 	lbl, exists := tw.Labeler.TypeLabels[tp]
 	if !exists {
 		switch tp := tp.(type) {
@@ -1689,7 +1779,7 @@ func getTypeLabel(tw *trap.Writer, tp types.Type) (trap.Label, bool) {
 		case *types.Interface:
 			var b strings.Builder
 			for i := 0; i < tp.NumMethods(); i++ {
-				meth := tp.Method(i)
+				meth := tp.Method(i).Origin()
 				methLbl := extractType(tw, meth.Type())
 				if i > 0 {
 					b.WriteString(",")
@@ -1758,15 +1848,16 @@ func getTypeLabel(tw *trap.Writer, tp types.Type) (trap.Label, bool) {
 			origintp := tp.Origin()
 			entitylbl, exists := tw.Labeler.LookupObjectID(origintp.Obj(), lbl)
 			if entitylbl == trap.InvalidLabel {
-				panic(fmt.Sprintf("Cannot construct label for named type %v (underlying object is %v).\n", origintp, origintp.Obj()))
+				panic(fmt.Sprintf("Cannot construct label for defined type %v (underlying object is %v).\n", origintp, origintp.Obj()))
 			}
 			if !exists {
 				extractObject(tw, origintp.Obj(), entitylbl)
 			}
-			lbl = tw.Labeler.GlobalID(fmt.Sprintf("{%s};namedtype", entitylbl))
+			lbl = tw.Labeler.GlobalID(fmt.Sprintf("{%s};definedtype", entitylbl))
 		case *types.TypeParam:
-			parentlbl := getTypeParamParentLabel(tw, tp)
-			lbl = tw.Labeler.GlobalID(fmt.Sprintf("{%v},%s;typeparamtype", parentlbl, tp.Obj().Name()))
+			parentlbl, isReceiverChild := getTypeParamParentLabel(tw, tp)
+			idx := tp.Index()
+			lbl = tw.Labeler.GlobalID(fmt.Sprintf("{%v},%d,%t,%s;typeparamtype", parentlbl, idx, isReceiverChild, tp.Obj().Name()))
 		case *types.Union:
 			var b strings.Builder
 			for i := 0; i < tp.Len(); i++ {
@@ -1804,9 +1895,9 @@ func extractBaseType(tw *trap.Writer, ptr trap.Label, base types.Type) {
 }
 
 // extractUnderlyingType extracts `underlying` as the underlying type of the
-// named type `named`
-func extractUnderlyingType(tw *trap.Writer, named trap.Label, underlying types.Type) {
-	dbscheme.UnderlyingTypeTable.Emit(tw, named, extractType(tw, underlying))
+// defined type `defined`
+func extractUnderlyingType(tw *trap.Writer, defined trap.Label, underlying types.Type) {
+	dbscheme.UnderlyingTypeTable.Emit(tw, defined, extractType(tw, underlying))
 }
 
 // extractComponentType extracts `component` as the `idx`th component type of `parent` with name `name`
@@ -1950,11 +2041,18 @@ func extractTypeParamDecls(tw *trap.Writer, fields *ast.FieldList, parent trap.L
 	}
 }
 
+func populateTypeParamParentsFromFunction(funcObj *types.Func) {
+	signature := funcObj.Type().(*types.Signature)
+	populateTypeParamParents(signature.RecvTypeParams(), funcObj, true)
+	populateTypeParamParents(signature.TypeParams(), funcObj, false)
+}
+
 // populateTypeParamParents sets `parent` as the parent of the elements of `typeparams`
-func populateTypeParamParents(typeparams *types.TypeParamList, parent types.Object) {
+// and records whether elements are defined in a receiver.
+func populateTypeParamParents(typeparams *types.TypeParamList, parent types.Object, isFromReceiver bool) {
 	if typeparams != nil {
-		for idx := 0; idx < typeparams.Len(); idx++ {
-			setTypeParamParent(typeparams.At(idx), parent)
+		for tparam := range typeparams.TypeParams() {
+			setTypeParamParent(tparam, parent, isFromReceiver)
 		}
 	}
 }
@@ -1973,54 +2071,32 @@ func getObjectBeingUsed(tw *trap.Writer, ident *ast.Ident) types.Object {
 	}
 }
 
-// trackInstantiatedStructFields tries to give the fields of an instantiated
-// struct type underlying `tp` the same labels as the corresponding fields of
-// the generic struct type. This is so that when we come across the
-// instantiated field in `tw.Package.TypesInfo.Uses` we will get the label for
-// the generic field instead.
-func trackInstantiatedStructFields(tw *trap.Writer, tp, origintp *types.Named) {
-	if tp == origintp {
-		return
-	}
+func getTypeParamParentLabel(tw *trap.Writer, tp *types.TypeParam) (trap.Label, bool) {
+	typeParamParentMutex.RLock()
+	entry, exists := typeParamParent[tp]
+	typeParamParentMutex.RUnlock()
 
-	if instantiatedStruct, ok := tp.Underlying().(*types.Struct); ok {
-		genericStruct, ok2 := origintp.Underlying().(*types.Struct)
-		if !ok2 {
-			log.Fatalf(
-				"Error: underlying type of instantiated type is a struct but underlying type of generic type is %s",
-				origintp.Underlying())
-		}
-
-		if instantiatedStruct.NumFields() != genericStruct.NumFields() {
-			log.Fatalf(
-				"Error: instantiated struct %s has different number of fields than the generic version %s (%d != %d)",
-				instantiatedStruct, genericStruct, instantiatedStruct.NumFields(), genericStruct.NumFields())
-		}
-
-		for i := 0; i < instantiatedStruct.NumFields(); i++ {
-			tw.ObjectsOverride[instantiatedStruct.Field(i)] = genericStruct.Field(i)
-		}
-	}
-}
-
-func getTypeParamParentLabel(tw *trap.Writer, tp *types.TypeParam) trap.Label {
-	parent, exists := typeParamParent[tp]
 	if !exists {
 		log.Fatalf("Parent of type parameter does not exist: %s %s", tp.String(), tp.Constraint().String())
 	}
-	parentlbl, _ := tw.Labeler.ScopedObjectID(parent, func() trap.Label {
+	parentlbl, _ := tw.Labeler.ScopedObjectID(entry.parent, func() trap.Label {
 		log.Fatalf("getTypeLabel() called for parent of type parameter %s", tp.String())
 		return trap.InvalidLabel
 	})
-	return parentlbl
+	return parentlbl, entry.isFromReceiver
 }
 
-func setTypeParamParent(tp *types.TypeParam, newobj types.Object) {
-	obj, exists := typeParamParent[tp]
+func setTypeParamParent(tp *types.TypeParam, parent types.Object, isFromReceiver bool) {
+	typeParamParentMutex.Lock()
+	defer typeParamParentMutex.Unlock()
+
+	entry, exists := typeParamParent[tp]
+	newEntry := typeParamParentEntry{parent, isFromReceiver}
 	if !exists {
-		typeParamParent[tp] = newobj
-	} else if newobj != obj {
-		log.Fatalf("Parent of type parameter '%s %s' being set to a different value: '%s' vs '%s'", tp.String(), tp.Constraint().String(), obj, newobj)
+		typeParamParent[tp] = newEntry
+	} else if entry != newEntry {
+		log.Fatalf("Parent of type parameter '%s %s' being set to a different value: {'%s', %t}'  vs {'%s', %t}",
+			tp.String(), tp.Constraint().String(), entry.parent, entry.isFromReceiver, parent, isFromReceiver)
 	}
 }
 
@@ -2043,4 +2119,94 @@ func skipExtractingValueForLeftOperand(tw *trap.Writer, be *ast.BinaryExpr) bool
 		return false
 	}
 	return true
+}
+
+// checkObjectNotSpecialized exits the program if `obj` is specialized. Note
+// that specialization is only possible for function objects and variable
+// objects.
+func checkObjectNotSpecialized(obj types.Object) {
+	if funcObj, ok := obj.(*types.Func); ok && funcObj != funcObj.Origin() {
+		log.Fatalf("Encountered unexpected specialization %s of generic function object %s", funcObj.FullName(), funcObj.Origin().FullName())
+	}
+	if varObj, ok := obj.(*types.Var); ok && varObj != varObj.Origin() {
+		log.Fatalf("Encountered unexpected specialization %s of generic variable object %s", varObj.String(), varObj.Origin().String())
+	}
+	if typeNameObj, ok := obj.(*types.TypeName); ok {
+		if definedType, ok := typeNameObj.Type().(*types.Named); ok && definedType != definedType.Origin() {
+			log.Fatalf("Encountered type object for specialization %s of defined type %s", definedType.String(), definedType.Origin().String())
+		}
+	}
+}
+
+// getTypeParamOrigin returns the origin type parameter for a type parameter
+// from an instantiated method.
+func getTypeParamOrigin(tp *types.TypeParam) *types.TypeParam {
+	typeParamOriginMutex.RLock()
+	origin, exists := typeParamOrigin[tp]
+	typeParamOriginMutex.RUnlock()
+
+	if exists {
+		return origin
+	} else {
+		return tp
+	}
+}
+
+// populateTypeParamParentsAndOrigins records for each type parameter of a method
+// the origin parent and type parameter.
+//
+// Consider a generic struct and a generic method:
+//
+//	type S[P any] struct{}
+//	func (*S[P]) m[Q ~P](x Q) {}
+//
+// If we have a variable 's' of type 'S[int]' and the expression 's.m[int](42)',
+// then the type of the selector expression 's.m' is 'func[Q ~int](Q)'. The
+// method 'm' here is an instantiation of the declaration, which has its own
+// type with type parameter 'Q' with constraint 'interface { ~int }'. As we
+// do not extract method instantiations, but only their origins, we want to
+// match this behavior for the constraints of instantiated type parameter, and
+// record their origin. Moreover, not extracting instantiations also means that
+// 'populateTypeParamParents' does not automatically get called on their type
+// parameters. To compensate, we add the type params here by calling
+// `setTypeParamParent`.
+//
+// As the parent of a type parameter use the origin method. This suffices, as
+// the name and index of the type parameter in the instantiation will be
+// identical to those of the uninstantiated method, and as only a constraint and
+// these two properties will be extracted for a type parameter.
+func populateTypeParamParentsAndOrigins(meth *types.Func, originmeth *types.Func) {
+	if meth == originmeth {
+		return
+	}
+
+	typeparams := meth.Type().(*types.Signature).TypeParams()
+	populateTypeParamParents(typeparams, originmeth, false)
+
+	origintypeparams := originmeth.Type().(*types.Signature).TypeParams()
+	populateTypeParamOrigins(meth, typeparams, origintypeparams)
+}
+
+func populateTypeParamOrigins(meth *types.Func, typeparams *types.TypeParamList, origintypeparams *types.TypeParamList) {
+	if typeparams.Len() != origintypeparams.Len() {
+		log.Fatalf("Method instantiation %s has %d type parameters, origin has %d",
+			meth, typeparams.Len(), origintypeparams.Len())
+	}
+
+	for j := 0; j < typeparams.Len(); j++ {
+		setTypeParamOrigin(typeparams.At(j), origintypeparams.At(j))
+	}
+}
+
+func setTypeParamOrigin(typeparam *types.TypeParam, origintypeparam *types.TypeParam) {
+	typeParamOriginMutex.Lock()
+	defer typeParamOriginMutex.Unlock()
+
+	entry, exists := typeParamOrigin[typeparam]
+	if !exists {
+		typeParamOrigin[typeparam] = origintypeparam
+	} else if entry != origintypeparam {
+		log.Fatalf("Origin of type parameter '%s %s' being set to a different value: '%s' vs '%s'",
+			typeparam.String(), typeparam.Constraint().String(), entry.String(), origintypeparam.String())
+	}
 }

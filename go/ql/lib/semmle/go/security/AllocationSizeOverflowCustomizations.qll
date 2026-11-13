@@ -32,7 +32,10 @@ module AllocationSizeOverflow {
   /**
    * A data-flow node that is an operand to an operation that may overflow.
    */
-  abstract class OverflowProneOperand extends DataFlow::Node { }
+  abstract class OverflowProneOperand extends DataFlow::Node {
+    /** Gets the operation that may overflow that `this` is an operand of. */
+    abstract DataFlow::Node getOverflowProneOperation();
+  }
 
   /**
    * A data-flow node that represents the size argument of an allocation, such as the `n` in
@@ -70,7 +73,9 @@ module AllocationSizeOverflow {
 
   private predicate allocationSizeCheck(DataFlow::Node g, Expr e, boolean branch) {
     exists(DataFlow::Node lesser |
-      g.(DataFlow::RelationalComparisonNode).leq(branch, lesser, _, _) and
+      pragma[only_bind_into](g)
+          .(DataFlow::RelationalComparisonNode)
+          .leq(pragma[only_bind_into](branch), pragma[only_bind_into](lesser), _, _) and
       not lesser.isConst() and
       globalValueNumber(DataFlow::exprNode(e)) = globalValueNumber(lesser)
     )
@@ -91,8 +96,7 @@ module AllocationSizeOverflow {
     AllocationSize allocsz;
 
     DefaultSink() {
-      this instanceof OverflowProneOperand and
-      localStep*(this, allocsz) and
+      localStep*(this.(OverflowProneOperand).getOverflowProneOperation(), allocsz) and
       not allocsz instanceof AllocationSizeCheckBarrier
     }
 
@@ -134,15 +138,18 @@ module AllocationSizeOverflow {
 
   /** An operand of an arithmetic expression that could cause overflow. */
   private class DefaultOverflowProneOperand extends OverflowProneOperand {
+    OperatorExpr parent;
+
     DefaultOverflowProneOperand() {
-      exists(OperatorExpr parent | isOverflowProne(parent) |
-        this.asExpr() = parent.getAnOperand() and
-        // only consider outermost operands to avoid double reporting
-        not exists(OperatorExpr grandparent | parent = grandparent.getAnOperand().stripParens() |
-          isOverflowProne(grandparent)
-        )
+      isOverflowProne(parent) and
+      this.asExpr() = parent.getAnOperand() and
+      // only consider outermost operands to avoid double reporting
+      not exists(OperatorExpr grandparent | parent = grandparent.getAnOperand().stripParens() |
+        isOverflowProne(grandparent)
       )
     }
+
+    override DataFlow::Node getOverflowProneOperation() { result.asExpr() = parent }
   }
 
   /**
@@ -157,7 +164,7 @@ module AllocationSizeOverflow {
     t instanceof BasicType and
     not t instanceof StringType
     or
-    isSmallType(t.(NamedType).getUnderlyingType())
+    isSmallType(t.(DefinedType).getUnderlyingType())
     or
     isSmallType(t.(PointerType).getBaseType())
     or

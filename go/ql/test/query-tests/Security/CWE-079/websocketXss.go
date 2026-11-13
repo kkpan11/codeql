@@ -10,15 +10,16 @@ import (
 	"fmt"
 	"net/http"
 
+	coder "github.com/coder/websocket"
 	gorilla "github.com/gorilla/websocket"
 	websocket "golang.org/x/net/websocket"
 	nhooyr "nhooyr.io/websocket"
 )
 
-func marshal(v interface{}) (data []byte, payloadType byte, err error) {
+func marshal(v any) (data []byte, payloadType byte, err error) {
 	return nil, 0, nil
 }
-func unmarshal(data []byte, payloadType byte, v interface{}) (err error) {
+func unmarshal(data []byte, payloadType byte, v any) (err error) {
 	return nil
 }
 
@@ -28,31 +29,36 @@ func xss(w http.ResponseWriter, r *http.Request) {
 	{
 		ws, _ := websocket.Dial(uri, "", origin)
 		var xnet = make([]byte, 512)
-		ws.Read(xnet)
-		fmt.Fprintf(w, "%v", xnet)
-		codec := &websocket.Codec{marshal, unmarshal}
+		ws.Read(xnet)              // $ Source[go/reflected-xss]
+		fmt.Fprintf(w, "%v", xnet) // $ Alert[go/reflected-xss]
+		codec := &websocket.Codec{Marshal: marshal, Unmarshal: unmarshal}
 		xnet2 := make([]byte, 512)
-		codec.Receive(ws, xnet2)
-		fmt.Fprintf(w, "%v", xnet2)
+		codec.Receive(ws, xnet2)    // $ Source[go/reflected-xss]
+		fmt.Fprintf(w, "%v", xnet2) // $ Alert[go/reflected-xss]
 	}
 	{
 		n, _, _ := nhooyr.Dial(context.TODO(), uri, nil)
-		_, nhooyr, _ := n.Read(context.TODO())
-		fmt.Fprintf(w, "%v", nhooyr)
+		_, nhooyr, _ := n.Read(context.TODO()) // $ Source[go/reflected-xss]
+		fmt.Fprintf(w, "%v", nhooyr)           // $ Alert[go/reflected-xss]
+	}
+	{
+		n, _, _ := coder.Dial(context.TODO(), uri, nil)
+		_, coderMsg, _ := n.Read(context.TODO()) // $ Source[go/reflected-xss]
+		fmt.Fprintf(w, "%v", coderMsg)           // $ Alert[go/reflected-xss]
 	}
 	{
 		dialer := gorilla.Dialer{}
 		conn, _, _ := dialer.Dial(uri, nil)
 		var gorillaMsg = make([]byte, 512)
-		gorilla.ReadJSON(conn, gorillaMsg)
-		fmt.Fprintf(w, "%v", gorillaMsg)
+		gorilla.ReadJSON(conn, gorillaMsg) // $ Source[go/reflected-xss]
+		fmt.Fprintf(w, "%v", gorillaMsg)   // $ Alert[go/reflected-xss]
 
 		gorilla2 := make([]byte, 512)
-		conn.ReadJSON(gorilla2)
-		fmt.Fprintf(w, "%v", gorilla2)
+		conn.ReadJSON(gorilla2)        // $ Source[go/reflected-xss]
+		fmt.Fprintf(w, "%v", gorilla2) // $ Alert[go/reflected-xss]
 
-		_, gorilla3, _ := conn.ReadMessage()
-		fmt.Fprintf(w, "%v", gorilla3)
+		_, gorilla3, _ := conn.ReadMessage() // $ Source[go/reflected-xss]
+		fmt.Fprintf(w, "%v", gorilla3)       // $ Alert[go/reflected-xss]
 
 	}
 }

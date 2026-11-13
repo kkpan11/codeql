@@ -134,6 +134,19 @@ class StringLiteral extends TextLiteral {
 }
 
 /**
+ * A C++ raw string literal. For example:
+ * ```
+ * const char *s1 = R"(abcdef)";
+ * const wchar_t *s2 = LR"x(123456)x";
+ * ```
+ */
+class RawStringLiteral extends StringLiteral {
+  RawStringLiteral() { this.getValueText().regexpMatch("[^\"]*R\".*\\(.*") }
+
+  override string getAPrimaryQlClass() { result = "RawStringLiteral" }
+}
+
+/**
  * An octal literal. For example:
  * ```
  * char esc = 033;
@@ -196,17 +209,6 @@ class ClassAggregateLiteral extends AggregateLiteral {
   Expr getAFieldExpr(Field field) { result = this.getFieldExpr(field, _) }
 
   /**
-   * DEPRECATED: Use `getAFieldExpr` instead.
-   *
-   * Gets the expression within the aggregate literal that is used to initialize
-   * field `field`, if present.
-   *
-   * This predicate may have multiple results since a field can be initialized
-   * multiple times in the same initializer.
-   */
-  deprecated Expr getFieldExpr(Field field) { result = this.getFieldExpr(field, _) }
-
-  /**
    * Gets the expression within the aggregate literal that is used to initialize
    * field `field`, if present. The expression is the `position`'th entry in the
    * aggregate literal.
@@ -224,7 +226,24 @@ class ClassAggregateLiteral extends AggregateLiteral {
   Expr getFieldExpr(Field field, int position) {
     field = classType.getAField() and
     aggregate_field_init(underlyingElement(this), unresolveElement(result), unresolveElement(field),
-      position)
+      position, _)
+  }
+
+  /**
+   * Holds if the `position`-th initialization of `field` in this aggregate initializer
+   * uses a designated (e.g., `.x = ...`) rather than a positional initializer.
+   *
+   * For example, in:
+   * ```c
+   * struct S { int x, y; };
+   * struct S s = { .x = 1, 2 };
+   * ```
+   * - `.x = 1` is a designated initializer, therefore `hasDesignator(x, 0)` holds.
+   * - `2` is a positional initializer for `s.y`, therefore `hasDesignator(y, 1)` does not hold.
+   */
+  predicate hasDesignator(Field field, int position) {
+    field = classType.getAField() and
+    aggregate_field_init(underlyingElement(this), _, unresolveElement(field), position, true)
   }
 
   /**
@@ -301,17 +320,6 @@ class ArrayOrVectorAggregateLiteral extends AggregateLiteral {
   Expr getAnElementExpr(int elementIndex) { result = this.getElementExpr(elementIndex, _) }
 
   /**
-   * DEPRECATED: Use `getAnElementExpr` instead.
-   *
-   * Gets the expression within the aggregate literal that is used to initialize
-   * element `elementIndex`, if present.
-   *
-   * This predicate may have multiple results since an element can be initialized
-   * multiple times in the same initializer.
-   */
-  deprecated Expr getElementExpr(int elementIndex) { result = this.getElementExpr(elementIndex, _) }
-
-  /**
    * Gets the expression within the aggregate literal that is used to initialize
    * element `elementIndex`, if present. The expression is the `position`'th entry
    * in the aggregate literal.
@@ -326,7 +334,24 @@ class ArrayOrVectorAggregateLiteral extends AggregateLiteral {
    * - `a.getElementExpr(0, 2)` gives `789`.
    */
   Expr getElementExpr(int elementIndex, int position) {
-    aggregate_array_init(underlyingElement(this), unresolveElement(result), elementIndex, position)
+    aggregate_array_init(underlyingElement(this), unresolveElement(result), elementIndex, position,
+      _)
+  }
+
+  /**
+   * Holds if the `position`-th initialization of the array element at `elementIndex`
+   * in this aggregate initializer uses a designated (e.g., `[0] = ...`) rather than
+   * a positional initializer.
+   *
+   * For example, in:
+   * ```c
+   * int x[] = { [0] = 1, 2 };
+   * ```
+   * - `[0] = 1` is a designated initializer, therefore `hasDesignator(0, 0)` holds.
+   * - `2` is a positional initializer for `x[1]`, therefore `hasDesignator(1, 1)` does not hold.
+   */
+  predicate hasDesignator(int elementIndex, int position) {
+    aggregate_array_init(underlyingElement(this), _, elementIndex, position, true)
   }
 
   /**

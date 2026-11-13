@@ -1,3 +1,256 @@
+## 2.1.17
+
+No user-facing changes.
+
+## 2.1.16
+
+No user-facing changes.
+
+## 2.1.15
+
+No user-facing changes.
+
+## 2.1.14
+
+No user-facing changes.
+
+## 2.1.13
+
+No user-facing changes.
+
+## 2.1.12
+
+No user-facing changes.
+
+## 2.1.11
+
+No user-facing changes.
+
+## 2.1.10
+
+No user-facing changes.
+
+## 2.1.9
+
+No user-facing changes.
+
+## 2.1.8
+
+No user-facing changes.
+
+## 2.1.7
+
+No user-facing changes.
+
+## 2.1.6
+
+No user-facing changes.
+
+## 2.1.5
+
+No user-facing changes.
+
+## 2.1.4
+
+No user-facing changes.
+
+## 2.1.3
+
+No user-facing changes.
+
+## 2.1.2
+
+No user-facing changes.
+
+## 2.1.1
+
+No user-facing changes.
+
+## 2.1.0
+
+### New Features
+
+* Two new flow features `FeatureEscapesSourceCallContext` and `FeatureEscapesSourceCallContextOrEqualSourceSinkCallContext` have been added. The former implies that the sink must be reached from the source by escaping the source call context, that is, flow must either return from the callable containing the source or use a jump-step before reaching the sink. The latter is the disjunction of the former and the existing `FeatureEqualSourceSinkCallContext` flow feature.
+
+## 2.0.27
+
+No user-facing changes.
+
+## 2.0.26
+
+No user-facing changes.
+
+## 2.0.25
+
+No user-facing changes.
+
+## 2.0.24
+
+No user-facing changes.
+
+## 2.0.23
+
+No user-facing changes.
+
+## 2.0.22
+
+No user-facing changes.
+
+## 2.0.21
+
+No user-facing changes.
+
+## 2.0.20
+
+No user-facing changes.
+
+## 2.0.19
+
+No user-facing changes.
+
+## 2.0.18
+
+No user-facing changes.
+
+## 2.0.17
+
+No user-facing changes.
+
+## 2.0.16
+
+No user-facing changes.
+
+## 2.0.15
+
+No user-facing changes.
+
+## 2.0.14
+
+No user-facing changes.
+
+## 2.0.13
+
+No user-facing changes.
+
+## 2.0.12
+
+No user-facing changes.
+
+## 2.0.11
+
+No user-facing changes.
+
+## 2.0.10
+
+No user-facing changes.
+
+## 2.0.9
+
+No user-facing changes.
+
+## 2.0.8
+
+No user-facing changes.
+
+## 2.0.7
+
+No user-facing changes.
+
+## 2.0.6
+
+No user-facing changes.
+
+## 2.0.5
+
+No user-facing changes.
+
+## 2.0.4
+
+No user-facing changes.
+
+## 2.0.3
+
+No user-facing changes.
+
+## 2.0.2
+
+No user-facing changes.
+
+## 2.0.1
+
+No user-facing changes.
+
+## 2.0.0
+
+### Breaking Changes
+
+* Deleted the deprecated `Make` and `MakeWithState` modules, use `Global` and `GlobalWithState` instead.
+* Deleted the deprecated `hasFlow`, `hasFlowPath`, `hasFlowTo`, and `hasFlowToExpr` predicates, use `flow`, `flowPath`, `flowTo`, and `flowToExpr` respectively instead.
+
+## 1.1.9
+
+No user-facing changes.
+
+## 1.1.8
+
+### Minor Analysis Improvements
+
+* Added a module `DataFlow::DeduplicatePathGraph` that can be used to avoid generating duplicate path explanations in queries that use flow state.
+
+## 1.1.7
+
+No user-facing changes.
+
+## 1.1.6
+
+No user-facing changes.
+
+## 1.1.5
+
+No user-facing changes.
+
+## 1.1.4
+
+No user-facing changes.
+
+## 1.1.3
+
+No user-facing changes.
+
+## 1.1.2
+
+No user-facing changes.
+
+## 1.1.1
+
+No user-facing changes.
+
+## 1.1.0
+
+### Deprecated APIs
+
+* The source/sink grouping feature of the data flow library has been removed. It was introduced primarily for debugging, but has not proven useful.
+
+## 1.0.5
+
+No user-facing changes.
+
+## 1.0.4
+
+No user-facing changes.
+
+## 1.0.3
+
+No user-facing changes.
+
+## 1.0.2
+
+No user-facing changes.
+
+## 1.0.1
+
+No user-facing changes.
+
 ## 1.0.0
 
 ### Breaking Changes

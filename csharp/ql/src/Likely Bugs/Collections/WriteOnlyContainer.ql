@@ -5,7 +5,8 @@
  * @problem.severity error
  * @precision high
  * @id cs/unused-collection
- * @tags maintainability
+ * @tags quality
+ *       maintainability
  *       useless-code
  *       external/cwe/cwe-561
  */
@@ -22,9 +23,12 @@ where
   ) and
   forex(Access a | a = v.getAnAccess() |
     a = any(ModifierMethodCall m).getQualifier() or
-    a = any(Assignment ass | ass.getRValue() instanceof ObjectCreation).getLValue()
+    a = any(AssignExpr ass | ass.getRightOperand() instanceof ObjectCreation).getLeftOperand() or
+    a =
+      any(LocalVariableDeclAndInitExpr ass | ass.getRightOperand() instanceof ObjectCreation)
+          .getLeftOperand()
   ) and
-  not v = any(ForeachStmt fs).getVariable() and
+  not v = any(ForEachStmt fs).getVariable() and
   not v = any(BindingPatternExpr vpe).getVariableDeclExpr().getVariable() and
   not v = any(Attribute a).getTarget()
 select v, "The contents of this container are never accessed."

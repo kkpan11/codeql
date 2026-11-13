@@ -1,3 +1,6 @@
+overlay[local]
+module;
+
 import python
 private import semmle.python.internal.CachedStages
 
@@ -14,12 +17,17 @@ abstract class AstNode extends AstNode_ {
   abstract Scope getScope();
 
   /**
+   * DEPRECATED: use `ControlFlowNode.getNode()` from the other direction instead;
+   * that is, replace `e.getAFlowNode() = n` with `n.getNode() = e`. This API is
+   * being removed to untangle the AST and CFG hierarchies in preparation for
+   * migrating the dataflow library off the legacy CFG.
+   *
    * Gets a flow node corresponding directly to this node.
    * NOTE: For some statements and other purely syntactic elements,
-   * there may not be a `ControlFlowNode`
+   * there may not be a `ControlFlowNode`.
    */
   cached
-  ControlFlowNode getAFlowNode() {
+  deprecated ControlFlowNode getAFlowNode() {
     Stages::AST::ref() and
     py_flow_bb_node(result, this, _, _)
   }
@@ -218,6 +226,9 @@ class DictItemListParent extends DictItemListParent_ { }
 /** A list of strings (the primitive type string not Bytes or Unicode) */
 class StringList extends StringList_ { }
 
+/** A list of template strings. */
+class TemplateStringList extends TemplateStringList_ { }
+
 /** A list of aliases in an import statement */
 class AliasList extends AliasList_ { }
 
@@ -273,3 +284,9 @@ class ParamSpec extends ParamSpec_, TypeParameter {
 
   override Expr getAChildNode() { result = this.getName() }
 }
+
+/** A template string literal. */
+class TemplateString extends TemplateString_, Expr { }
+
+/** An (implicitly) concatenated list of template strings. */
+class JoinedTemplateString extends JoinedTemplateString_, Expr { }

@@ -33,36 +33,46 @@ Expr asSinkExpr(DataFlow::Node node) {
   result = node.asExpr()
 }
 
+private predicate isSink(DataFlow::Node sink, string extraText) {
+  exists(SqlLikeFunction runSql, string callChain |
+    runSql.outermostWrapperFunctionCall(asSinkExpr(sink), callChain) and
+    extraText = " and then passed to " + callChain
+  )
+  or
+  // sink defined using models-as-data
+  sinkNode(sink, "sql-injection") and extraText = ""
+}
+
 module SqlTaintedConfig implements DataFlow::ConfigSig {
   predicate isSource(DataFlow::Node node) { node instanceof FlowSource }
 
-  predicate isSink(DataFlow::Node node) {
-    exists(SqlLikeFunction runSql | runSql.outermostWrapperFunctionCall(asSinkExpr(node), _))
-  }
+  predicate isSink(DataFlow::Node node) { isSink(node, _) }
 
   predicate isBarrier(DataFlow::Node node) {
     node.asExpr().getUnspecifiedType() instanceof IntegralType
-  }
-
-  predicate isBarrierIn(DataFlow::Node node) {
+    or
     exists(SqlBarrierFunction sql, int arg, FunctionInput input |
       node.asIndirectArgument() = sql.getACallToThisFunction().getArgument(arg) and
       input.isParameterDeref(arg) and
       sql.barrierSqlArgument(input, _)
     )
+    or
+    // barrier defined using models-as-data
+    barrierNode(node, "sql-injection")
   }
+
+  predicate observeDiffInformedIncrementalMode() { any() }
 }
 
 module SqlTainted = TaintTracking::Global<SqlTaintedConfig>;
 
 from
-  SqlLikeFunction runSql, Expr taintedArg, FlowSource taintSource, SqlTainted::PathNode sourceNode,
-  SqlTainted::PathNode sinkNode, string callChain
+  FlowSource taintSource, SqlTainted::PathNode sourceNode, SqlTainted::PathNode sinkNode,
+  string extraText
 where
-  runSql.outermostWrapperFunctionCall(taintedArg, callChain) and
   SqlTainted::flowPath(sourceNode, sinkNode) and
-  taintedArg = asSinkExpr(sinkNode.getNode()) and
+  isSink(sinkNode.getNode(), extraText) and
   taintSource = sourceNode.getNode()
-select taintedArg, sourceNode, sinkNode,
-  "This argument to a SQL query function is derived from $@ and then passed to " + callChain + ".",
-  taintSource, "user input (" + taintSource.getSourceType() + ")"
+select sinkNode.getNode(), sourceNode, sinkNode,
+  "This argument to a SQL query function is derived from $@" + extraText + ".", taintSource,
+  "user input (" + taintSource.getSourceType() + ")"

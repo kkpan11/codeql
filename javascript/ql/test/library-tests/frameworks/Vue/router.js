@@ -1,4 +1,4 @@
-import Router from 'vue-router';
+import Router, { useRoute } from 'vue-router';
 
 export const router = new Router({
     routes: [
@@ -16,8 +16,17 @@ export const router = new Router({
                         from.query.x;
                     }
                 }
-            ]
-        }
+            ],
+            props: route => ({
+                x: route.query.x
+            }),
+        },
+        {
+            props: {
+                x: route => route.query.x,
+                y: route => route.query.y
+            },
+        },
     ],
     scrollBehavior(to, from, savedPosition) {
         to.query.x;
@@ -35,3 +44,4 @@ router.afterEach((to, from) => {
     from.query.x;
 });
 
+useRoute().query;

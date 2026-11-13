@@ -5,6 +5,77 @@
  */
 
 import javascript
+private import semmle.javascript.dataflow.internal.sharedlib.DataFlowArg
+private import codeql.threatmodels.ThreatModels
+private import codeql.concepts.ConceptsShared
+
+private module ConceptsShared = ConceptsMake<Location, JSDataFlow>;
+
+/**
+ * A data flow source, for a specific threat-model.
+ *
+ * Extend this class to refine existing API models. If you want to model new APIs,
+ * extend `ThreatModelSource::Range` instead.
+ */
+class ThreatModelSource extends DataFlow::Node instanceof ThreatModelSource::Range {
+  /**
+   * Gets a string that represents the source kind with respect to threat modeling.
+   *
+   *
+   * See
+   * - https://github.com/github/codeql/blob/main/docs/codeql/reusables/threat-model-description.rst
+   * - https://github.com/github/codeql/blob/main/shared/threat-models/ext/threat-model-grouping.model.yml
+   */
+  string getThreatModel() { result = super.getThreatModel() }
+
+  /** Gets a string that describes the type of this threat-model source. */
+  string getSourceType() { result = super.getSourceType() }
+
+  /**
+   * Holds if this is a source of data that is specific to the web browser environment.
+   */
+  predicate isClientSideSource() { super.isClientSideSource() }
+}
+
+/** Provides a class for modeling new sources for specific threat-models. */
+module ThreatModelSource {
+  /**
+   * A data flow source, for a specific threat-model.
+   *
+   * Extend this class to model new APIs. If you want to refine existing API models,
+   * extend `ThreatModelSource` instead.
+   */
+  abstract class Range extends DataFlow::Node {
+    /**
+     * Gets a string that represents the source kind with respect to threat modeling.
+     *
+     * See
+     * - https://github.com/github/codeql/blob/main/docs/codeql/reusables/threat-model-description.rst
+     * - https://github.com/github/codeql/blob/main/shared/threat-models/ext/threat-model-grouping.model.yml
+     */
+    abstract string getThreatModel();
+
+    /** Gets a string that describes the type of this threat-model source. */
+    abstract string getSourceType();
+
+    /**
+     * Holds if this is a source of data that is specific to the web browser environment.
+     */
+    predicate isClientSideSource() { this.getThreatModel() = "view-component-input" }
+  }
+}
+
+/**
+ * A data flow source that is enabled in the current threat model configuration.
+ */
+class ActiveThreatModelSource extends ThreatModelSource {
+  ActiveThreatModelSource() {
+    exists(string kind |
+      currentThreatModel(kind) and
+      this.getThreatModel() = kind
+    )
+  }
+}
 
 /**
  * A data flow node that executes an operating system command,
@@ -66,6 +137,19 @@ abstract class FileSystemReadAccess extends FileSystemAccess {
 }
 
 /**
+ * A FileSystemReadAccess seen as a ThreatModelSource.
+ */
+private class FileSystemReadAccessAsThreatModelSource extends ThreatModelSource::Range {
+  FileSystemReadAccessAsThreatModelSource() {
+    this = any(FileSystemReadAccess access).getADataNode()
+  }
+
+  override string getThreatModel() { result = "file" }
+
+  override string getSourceType() { result = "FileSystemReadAccess" }
+}
+
+/**
  * A data flow node that writes data to the file system.
  */
 abstract class FileSystemWriteAccess extends FileSystemAccess {
@@ -92,6 +176,17 @@ abstract class DatabaseAccess extends DataFlow::Node {
 }
 
 /**
+ * A DatabaseAccess seen as a ThreatModelSource.
+ */
+private class DatabaseAccessAsThreatModelSource extends ThreatModelSource::Range {
+  DatabaseAccessAsThreatModelSource() { this = any(DatabaseAccess access).getAResult() }
+
+  override string getThreatModel() { result = "database" }
+
+  override string getSourceType() { result = "DatabaseAccess" }
+}
+
+/**
  * A data flow node that reads persistent data.
  */
 abstract class PersistentReadAccess extends DataFlow::Node {
@@ -115,17 +210,9 @@ abstract class PersistentWriteAccess extends DataFlow::Node {
  * Provides models for cryptographic things.
  */
 module Cryptography {
-  private import semmle.javascript.internal.ConceptsShared::Cryptography as SC
+  private import ConceptsShared::Cryptography as SC
 
-  /**
-   * A data-flow node that is an application of a cryptographic algorithm. For example,
-   * encryption, decryption, signature-validation.
-   *
-   * Extend this class to refine existing API models. If you want to model new APIs,
-   * extend `CryptographicOperation::Range` instead.
-   */
-  class CryptographicOperation extends SC::CryptographicOperation instanceof CryptographicOperation::Range
-  { }
+  class CryptographicOperation = SC::CryptographicOperation;
 
   class EncryptionAlgorithm = SC::EncryptionAlgorithm;
 
@@ -138,4 +225,29 @@ module Cryptography {
   class BlockMode = SC::BlockMode;
 
   class CryptographicAlgorithm = SC::CryptographicAlgorithm;
+}
+
+/**
+ * A data-flow node that prompts an AI model.
+ *
+ * Extend this class to refine existing API models. If you want to model new APIs,
+ * extend `AIPrompt::Range` instead.
+ */
+class AIPrompt extends DataFlow::Node instanceof AIPrompt::Range {
+  /** Gets an input that is used as AI prompt. */
+  DataFlow::Node getAPrompt() { result = super.getAPrompt() }
+}
+
+/** Provides a class for modeling new AI prompting mechanisms. */
+module AIPrompt {
+  /**
+   * A data-flow node that prompts an AI model.
+   *
+   * Extend this class to model new APIs. If you want to refine existing API models,
+   * extend `AIPrompt` instead.
+   */
+  abstract class Range extends DataFlow::Node {
+    /** Gets an input that is used as AI prompt. */
+    abstract DataFlow::Node getAPrompt();
+  }
 }

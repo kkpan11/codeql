@@ -2,6 +2,8 @@
  * Definitions relating to JAX-WS (Java/Jakarta API for XML Web Services) and JAX-RS
  * (Java/Jakarta API for RESTful Web Services).
  */
+overlay[local?]
+module;
 
 import java
 private import semmle.code.java.frameworks.Networking
@@ -11,7 +13,7 @@ private import semmle.code.java.security.XSS
 /**
  * Gets a name for the root package of JAX-RS.
  */
-string getAJaxRsPackage() { result in ["javax.ws.rs", "jakarta.ws.rs"] }
+string getAJaxRsPackage() { result = javaxOrJakarta() + ".ws.rs" }
 
 /**
  * Gets a name for package `subpackage` within the JAX-RS hierarchy.
@@ -40,7 +42,7 @@ class JaxWsEndpoint extends Class {
     result.isPublic() and
     not result instanceof InitializerMethod and
     not exists(Annotation a | a = result.getAnAnnotation() |
-      a.getType().hasQualifiedName(["javax", "jakarta"] + ".jws", "WebMethod") and
+      a.getType().hasQualifiedName(javaxOrJakarta() + ".jws", "WebMethod") and
       a.getValue("exclude").(BooleanLiteral).getBooleanValue() = true
     ) and
     forex(ParamOrReturn paramOrRet | paramOrRet = result.getAParameter() or paramOrRet = result |
@@ -60,8 +62,7 @@ class JaxWsEndpoint extends Class {
 /** The annotation type `@XmlJavaTypeAdapter`. */
 class XmlJavaTypeAdapter extends AnnotationType {
   XmlJavaTypeAdapter() {
-    this.hasQualifiedName(["javax", "jakarta"] + ".xml.bind.annotation.adapters",
-      "XmlJavaTypeAdapter")
+    this.hasQualifiedName(javaxOrJakarta() + ".xml.bind.annotation.adapters", "XmlJavaTypeAdapter")
   }
 }
 
@@ -148,6 +149,21 @@ private predicate hasPathAnnotation(Annotatable annotatable) {
 }
 
 /**
+ * Holds if the class has or inherits the JaxRs `@Path` annotation.
+ */
+private predicate hasOrInheritsPathAnnotation(Class c) {
+  hasPathAnnotation(c)
+  or
+  // Note that by the JAX-RS spec, JAX-RS annotations on classes and interfaces
+  // are not inherited, but some implementations, like Apache CXF, do inherit
+  // them. I think this only applies if there are no JaxRS annotations on the
+  // class itself, as that is the rule in the JAX-RS spec for method
+  // annotations.
+  hasPathAnnotation(c.getAnAncestor()) and
+  not exists(c.getAnAnnotation().(JaxRSAnnotation))
+}
+
+/**
  * A method which is annotated with one or more JaxRS resource type annotations e.g. `@GET`, `@POST` etc.
  */
 class JaxRsResourceMethod extends Method {
@@ -191,7 +207,7 @@ class JaxRsResourceMethod extends Method {
 class JaxRsResourceClass extends Class {
   JaxRsResourceClass() {
     // A root resource class has a @Path annotation on the class.
-    hasPathAnnotation(this)
+    hasOrInheritsPathAnnotation(this)
     or
     // A sub-resource
     exists(JaxRsResourceClass resourceClass, Method method |
@@ -227,7 +243,7 @@ class JaxRsResourceClass extends Class {
   /**
    * Holds if this class is a "root resource" class
    */
-  predicate isRootResource() { hasPathAnnotation(this) }
+  predicate isRootResource() { hasOrInheritsPathAnnotation(this) }
 
   /**
    * Gets a `Constructor` that may be called by a JaxRS container to construct this class reflectively.
@@ -275,7 +291,7 @@ class JaxRSAnnotation extends Annotation {
   JaxRSAnnotation() {
     exists(AnnotationType a |
       a = this.getType() and
-      a.getPackage().getName().regexpMatch(["javax\\.ws\\.rs(\\..*)?", "jakarta\\.ws\\.rs(\\..*)?"])
+      a.getPackage().getName().regexpMatch(javaxOrJakarta() + "\\.ws\\.rs(\\..*)?")
     )
   }
 }
@@ -407,22 +423,37 @@ private class JaxRSXssSink extends XssSink {
     exists(JaxRsResourceMethod resourceMethod, ReturnStmt rs |
       resourceMethod = any(JaxRsResourceClass resourceClass).getAResourceMethod() and
       rs.getEnclosingCallable() = resourceMethod and
-      this.asExpr() = rs.getResult()
+      this.asExpr() = rs.getExpr()
     |
       not exists(resourceMethod.getProducesAnnotation())
       or
-      isXssVulnerableContentType(getContentTypeString(resourceMethod
-              .getProducesAnnotation()
-              .getADeclaredContentTypeExpr()))
+      isXssVulnerableContentTypeExpr(resourceMethod
+            .getProducesAnnotation()
+            .getADeclaredContentTypeExpr())
     )
   }
 }
 
-private predicate isXssVulnerableContentTypeExpr(Expr e) {
-  isXssVulnerableContentType(getContentTypeString(e))
+pragma[nomagic]
+private predicate contentTypeString(string s) { s = getContentTypeString(_) }
+
+pragma[nomagic]
+private predicate isXssVulnerableContentTypeString(string s) {
+  contentTypeString(s) and isXssVulnerableContentType(s)
 }
 
-private predicate isXssSafeContentTypeExpr(Expr e) { isXssSafeContentType(getContentTypeString(e)) }
+pragma[nomagic]
+private predicate isXssSafeContentTypeString(string s) {
+  contentTypeString(s) and isXssSafeContentType(s)
+}
+
+private predicate isXssVulnerableContentTypeExpr(Expr e) {
+  isXssVulnerableContentTypeString(getContentTypeString(e))
+}
+
+private predicate isXssSafeContentTypeExpr(Expr e) {
+  isXssSafeContentTypeString(getContentTypeString(e))
+}
 
 /**
  * Gets a builder expression or related type that is configured to use the given `contentType`.

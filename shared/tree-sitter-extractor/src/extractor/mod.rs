@@ -7,22 +7,136 @@ use std::collections::BTreeSet as Set;
 use std::env;
 use std::path::Path;
 
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::Layer;
+use tracing_subscriber::filter::Filtered;
+use tracing_subscriber::fmt::format::DefaultFields;
+use tracing_subscriber::fmt::format::Format;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 use tree_sitter::{Language, Node, Parser, Range, Tree};
 
+pub mod desugaring;
+mod driver;
 pub mod simple;
+
+/// Trait abstracting over tree-sitter and yeast node types for extraction.
+trait AstNode {
+    fn kind(&self) -> &str;
+    fn is_named(&self) -> bool;
+    fn is_missing(&self) -> bool;
+    fn is_error(&self) -> bool;
+    fn is_extra(&self) -> bool;
+    fn start_position(&self) -> tree_sitter::Point;
+    fn end_position(&self) -> tree_sitter::Point;
+    fn byte_range(&self) -> std::ops::Range<usize>;
+    fn end_byte(&self) -> usize {
+        self.byte_range().end
+    }
+    /// For yeast nodes with synthetic content, return it. Otherwise None.
+    fn opt_string_content(&self) -> Option<String> {
+        None
+    }
+}
+
+impl<'a> AstNode for Node<'a> {
+    fn kind(&self) -> &str {
+        Node::kind(self)
+    }
+    fn is_named(&self) -> bool {
+        Node::is_named(self)
+    }
+    fn is_missing(&self) -> bool {
+        Node::is_missing(self)
+    }
+    fn is_error(&self) -> bool {
+        Node::is_error(self)
+    }
+    fn is_extra(&self) -> bool {
+        Node::is_extra(self)
+    }
+    fn start_position(&self) -> tree_sitter::Point {
+        Node::start_position(self)
+    }
+    fn end_position(&self) -> tree_sitter::Point {
+        Node::end_position(self)
+    }
+    fn byte_range(&self) -> std::ops::Range<usize> {
+        Node::byte_range(self)
+    }
+}
+
+impl<I: yeast::TreeId> AstNode for yeast::Node<I> {
+    fn kind(&self) -> &str {
+        yeast::Node::kind_name(self)
+    }
+    fn is_named(&self) -> bool {
+        yeast::Node::is_named(self)
+    }
+    fn is_missing(&self) -> bool {
+        yeast::Node::is_missing(self)
+    }
+    fn is_error(&self) -> bool {
+        yeast::Node::is_error(self)
+    }
+    fn is_extra(&self) -> bool {
+        yeast::Node::is_extra(self)
+    }
+    fn start_position(&self) -> tree_sitter::Point {
+        let p = yeast::Node::start_position(self);
+        tree_sitter::Point {
+            row: p.row,
+            column: p.column,
+        }
+    }
+    fn end_position(&self) -> tree_sitter::Point {
+        let p = yeast::Node::end_position(self);
+        tree_sitter::Point {
+            row: p.row,
+            column: p.column,
+        }
+    }
+    fn byte_range(&self) -> std::ops::Range<usize> {
+        yeast::Node::byte_range(self)
+    }
+    fn opt_string_content(&self) -> Option<String> {
+        yeast::Node::opt_string_content(self)
+    }
+}
 
 /// Sets the tracing level based on the environment variables
 /// `RUST_LOG` and `CODEQL_VERBOSITY` (prioritized in that order),
 /// falling back to `warn` if neither is set.
 pub fn set_tracing_level(language: &str) {
-    tracing_subscriber::fmt()
+    let verbosity = env::var("CODEQL_VERBOSITY").ok();
+    tracing_subscriber::registry()
+        .with(default_subscriber_with_level(language, &verbosity))
+        .init();
+}
+
+/// Create a `Subscriber` configured with the tracing level based on the environment variables
+/// `RUST_LOG` and `verbosity` (prioritized in that order), falling back to `warn` if neither is set.
+pub fn default_subscriber_with_level(
+    language: &str,
+    verbosity: &Option<String>,
+) -> Filtered<
+    tracing_subscriber::fmt::Layer<
+        tracing_subscriber::Registry,
+        DefaultFields,
+        Format<tracing_subscriber::fmt::format::Full, ()>,
+    >,
+    EnvFilter,
+    tracing_subscriber::Registry,
+> {
+    tracing_subscriber::fmt::layer()
         .with_target(false)
         .without_time()
         .with_level(true)
-        .with_env_filter(
+        .with_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(
                 |_| -> tracing_subscriber::EnvFilter {
-                    let verbosity = env::var("CODEQL_VERBOSITY")
+                    let verbosity = verbosity
+                        .as_ref()
                         .map(|v| match v.to_lowercase().as_str() {
                             "off" | "errors" => "error",
                             "warnings" => "warn",
@@ -31,30 +145,34 @@ pub fn set_tracing_level(language: &str) {
                             "trace" | "progress++" | "progress+++" => "trace",
                             _ => "warn",
                         })
-                        .unwrap_or_else(|_| "warn");
+                        .unwrap_or_else(|| "warn");
                     tracing_subscriber::EnvFilter::new(format!(
-                        "{}_extractor={}",
-                        language, verbosity
+                        "{language}_extractor={verbosity},codeql_extractor={verbosity}"
                     ))
                 },
             ),
         )
-        .init();
 }
-
-pub fn populate_file(writer: &mut trap::Writer, absolute_path: &Path) -> trap::Label {
+pub fn populate_file(
+    writer: &mut trap::Writer,
+    absolute_path: &Path,
+    transformer: Option<&file_paths::PathTransformer>,
+) -> trap::Label {
     let (file_label, fresh) = writer.global_id(&trap::full_id_for_file(
-        &file_paths::normalize_path(absolute_path),
+        &file_paths::normalize_and_transform_path(absolute_path, transformer),
     ));
     if fresh {
         writer.add_tuple(
             "files",
             vec![
                 trap::Arg::Label(file_label),
-                trap::Arg::String(file_paths::normalize_path(absolute_path)),
+                trap::Arg::String(file_paths::normalize_and_transform_path(
+                    absolute_path,
+                    transformer,
+                )),
             ],
         );
-        populate_parent_folders(writer, file_label, absolute_path.parent());
+        populate_parent_folders(writer, file_label, absolute_path.parent(), transformer);
     }
     file_label
 }
@@ -77,8 +195,8 @@ pub fn populate_empty_location(writer: &mut trap::Writer) {
     let file_label = populate_empty_file(writer);
     let loc_label = global_location(
         writer,
-        file_label,
         trap::Location {
+            file_label,
             start_line: 0,
             start_column: 0,
             end_line: 0,
@@ -92,6 +210,7 @@ pub fn populate_parent_folders(
     writer: &mut trap::Writer,
     child_label: trap::Label,
     path: Option<&Path>,
+    transformer: Option<&file_paths::PathTransformer>,
 ) {
     let mut path = path;
     let mut child_label = child_label;
@@ -99,9 +218,9 @@ pub fn populate_parent_folders(
         match path {
             None => break,
             Some(folder) => {
-                let (folder_label, fresh) = writer.global_id(&trap::full_id_for_folder(
-                    &file_paths::normalize_path(folder),
-                ));
+                let parent = folder.parent();
+                let folder = file_paths::normalize_and_transform_path(folder, transformer);
+                let (folder_label, fresh) = writer.global_id(&trap::full_id_for_folder(&folder));
                 writer.add_tuple(
                     "containerparent",
                     vec![
@@ -112,12 +231,9 @@ pub fn populate_parent_folders(
                 if fresh {
                     writer.add_tuple(
                         "folders",
-                        vec![
-                            trap::Arg::Label(folder_label),
-                            trap::Arg::String(file_paths::normalize_path(folder)),
-                        ],
+                        vec![trap::Arg::Label(folder_label), trap::Arg::String(folder)],
                     );
-                    path = folder.parent();
+                    path = parent;
                     child_label = folder_label;
                 } else {
                     break;
@@ -128,14 +244,10 @@ pub fn populate_parent_folders(
 }
 
 /** Get the label for the given location, defining it a global ID if it doesn't exist yet. */
-fn global_location(
-    writer: &mut trap::Writer,
-    file_label: trap::Label,
-    location: trap::Location,
-) -> trap::Label {
+fn global_location(writer: &mut trap::Writer, location: trap::Location) -> trap::Label {
     let (loc_label, fresh) = writer.global_id(&format!(
         "loc,{{{}}},{},{},{},{}",
-        file_label,
+        location.file_label,
         location.start_line,
         location.start_column,
         location.end_line,
@@ -146,7 +258,7 @@ fn global_location(
             "locations_default",
             vec![
                 trap::Arg::Label(loc_label),
-                trap::Arg::Label(file_label),
+                trap::Arg::Label(location.file_label),
                 trap::Arg::Int(location.start_line),
                 trap::Arg::Int(location.start_column),
                 trap::Arg::Int(location.end_line),
@@ -159,18 +271,14 @@ fn global_location(
 
 /** Get the label for the given location, creating it as a fresh ID if we haven't seen the location
  * yet for this file. */
-fn location_label(
-    writer: &mut trap::Writer,
-    file_label: trap::Label,
-    location: trap::Location,
-) -> trap::Label {
+pub fn location_label(writer: &mut trap::Writer, location: trap::Location) -> trap::Label {
     let (loc_label, fresh) = writer.location_label(location);
     if fresh {
         writer.add_tuple(
             "locations_default",
             vec![
                 trap::Arg::Label(loc_label),
-                trap::Arg::Label(file_label),
+                trap::Arg::Label(location.file_label),
                 trap::Arg::Int(location.start_line),
                 trap::Arg::Int(location.start_column),
                 trap::Arg::Int(location.end_line),
@@ -182,17 +290,32 @@ fn location_label(
 }
 
 /// Extracts the source file at `path`, which is assumed to be canonicalized.
+/// When `desugarer` is `Some`, the parsed tree is first transformed
+/// through the supplied yeast desugarer before TRAP extraction. Building
+/// the desugarer (which parses YAML and constructs the schema) is the
+/// caller's responsibility, allowing it to be done once and shared across
+/// files.
+#[allow(clippy::too_many_arguments)]
+/// Extract a file with a tree-sitter grammar, walking the parse tree directly.
+/// Comments and other `extra` nodes are emitted inline as tokens. This is the
+/// path for languages that don't desugar their syntax tree (and hence have no
+/// `extra` side channel); desugaring languages use [`extract_parsed`] instead.
 pub fn extract(
     language: &Language,
     language_prefix: &str,
     schema: &NodeTypeMap,
     diagnostics_writer: &mut diagnostics::LogWriter,
     trap_writer: &mut trap::Writer,
+    transformer: Option<&file_paths::PathTransformer>,
     path: &Path,
     source: &[u8],
     ranges: &[Range],
 ) {
-    let path_str = file_paths::normalize_path(path);
+    let path_str = file_paths::normalize_and_transform_path(path, transformer);
+    let source_root = std::env::current_dir()
+        .ok()
+        .and_then(|d| d.canonicalize().ok());
+    let diagnostics_path = file_paths::relativize_for_diagnostic(path, source_root.as_deref());
     let span = tracing::span!(
         tracing::Level::TRACE,
         "extract",
@@ -201,27 +324,193 @@ pub fn extract(
 
     let _enter = span.enter();
 
-    tracing::info!("extracting: {}", path_str);
+    tracing::debug!("extracting: {}", path_str);
 
     let mut parser = Parser::new();
     parser.set_language(language).unwrap();
     parser.set_included_ranges(ranges).unwrap();
     let tree = parser.parse(source, None).expect("Failed to parse file");
-    trap_writer.comment(format!("Auto-generated TRAP file for {}", path_str));
-    let file_label = populate_file(trap_writer, path);
+    trap_writer.comment(format!("Auto-generated TRAP file for {path_str}"));
+    let file_label = populate_file(trap_writer, path, transformer);
     let mut visitor = Visitor::new(
         source,
         diagnostics_writer,
         trap_writer,
-        // TODO: should we handle path strings that are not valid UTF8 better?
-        &path_str,
+        &diagnostics_path,
         file_label,
         language_prefix,
         schema,
     );
+
     traverse(&tree, &mut visitor);
 
     parser.reset();
+}
+
+/// A source tree produced by a parser: the raw `yeast::Ast` (pre-desugaring)
+/// plus side-channel `extra` tokens (comments and similar) that are not
+/// attached to the AST proper.
+pub struct ParsedTree {
+    pub ast: yeast::Ast,
+    pub extras: Vec<ExtraToken>,
+}
+
+/// A piece of side-channel `extra` content (a comment or unexpected text)
+/// recovered by a parser. `kind` is a language-defined id written verbatim into
+/// the `<lang>_trivia_tokeninfo` table (the tree-sitter parser uses the
+/// grammar's node kind id here; a custom parser supplies its own stable
+/// enumeration).
+pub struct ExtraToken {
+    pub kind: usize,
+    pub range: yeast::Range,
+    pub text: String,
+}
+
+/// Build a parser closure that parses `source` with a tree-sitter `language`,
+/// producing a [`ParsedTree`]: a `yeast::Ast` (via [`yeast::Ast::from_tree`])
+/// plus the `extra` nodes (comments and similar) recovered as side-channel
+/// tokens. This lets a tree-sitter language plug into the same
+/// `ParsedTree`-producing interface as a custom parser.
+pub fn tree_sitter_parser(
+    language: tree_sitter::Language,
+) -> impl Fn(&[u8]) -> Result<ParsedTree, String> + Send + Sync {
+    move |source: &[u8]| {
+        let mut parser = Parser::new();
+        parser
+            .set_language(&language)
+            .map_err(|e| format!("failed to set tree-sitter language: {e}"))?;
+        let tree = parser
+            .parse(source, None)
+            .ok_or_else(|| "tree-sitter failed to parse".to_string())?;
+        let ast = yeast::Ast::from_tree_with_schema_and_source(
+            yeast::schema::from_language(&language),
+            &tree,
+            &language,
+            source.to_vec(),
+        );
+        let mut extras = Vec::new();
+        collect_extras(tree.root_node(), source, &mut extras);
+        Ok(ParsedTree { ast, extras })
+    }
+}
+
+/// Collect `extra` nodes (comments and similar) under `node` into `out` as
+/// [`ExtraToken`]s, keyed by the grammar's node kind id, for a desugaring
+/// language whose rewritten AST won't retain them.
+fn collect_extras(node: Node<'_>, source: &[u8], out: &mut Vec<ExtraToken>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.is_extra() {
+            let text = String::from_utf8_lossy(&source[child.byte_range()]).into_owned();
+            out.push(ExtraToken {
+                kind: child.kind_id() as usize,
+                range: child.range().into(),
+                text,
+            });
+        } else {
+            collect_extras(child, source, out);
+        }
+    }
+}
+
+/// Extract a file from a [`ParsedTree`]-producing parser that desugars. The
+/// parser yields a `yeast::Ast` plus side-channel `extra` tokens; the AST is
+/// rewritten through `desugarer` ([`yeast::Desugarer::run_from_ast`]) before
+/// TRAP extraction, and the `extra` tokens (comments and similar, which the
+/// desugared AST does not carry) are emitted from the side channel. Both
+/// tree-sitter grammars (via [`tree_sitter_parser`]) and custom parsers plug in
+/// here; languages that don't desugar use [`extract`] instead. Parse and
+/// desugaring errors are returned to the multi-file driver so it can skip only
+/// this file and continue extracting the rest.
+#[allow(clippy::too_many_arguments)]
+pub fn extract_parsed(
+    parse: &(dyn Fn(&[u8]) -> Result<ParsedTree, String> + Send + Sync),
+    language_prefix: &str,
+    schema: &NodeTypeMap,
+    diagnostics_writer: &mut diagnostics::LogWriter,
+    trap_writer: &mut trap::Writer,
+    transformer: Option<&file_paths::PathTransformer>,
+    path: &Path,
+    source: &[u8],
+    desugarer: &dyn yeast::Desugarer,
+) -> Result<(), String> {
+    let path_str = file_paths::normalize_and_transform_path(path, transformer);
+    let source_root = std::env::current_dir()
+        .ok()
+        .and_then(|d| d.canonicalize().ok());
+    let diagnostics_path = file_paths::relativize_for_diagnostic(path, source_root.as_deref());
+    let span = tracing::span!(tracing::Level::TRACE, "extract", file = %path_str);
+    let _enter = span.enter();
+    tracing::debug!("extracting: {}", path_str);
+
+    let parsed = parse(source).map_err(|e| format!("Parsing failed: {e}"))?;
+    let ast = desugarer
+        .run_from_ast(parsed.ast)
+        .map_err(|e| format!("Desugaring failed: {e}"))?;
+
+    trap_writer.comment(format!("Auto-generated TRAP file for {path_str}"));
+    let file_label = populate_file(trap_writer, path, transformer);
+    let mut visitor = Visitor::new(
+        source,
+        diagnostics_writer,
+        trap_writer,
+        &diagnostics_path,
+        file_label,
+        language_prefix,
+        schema,
+    );
+
+    traverse_yeast(&ast, &mut visitor);
+    // Comments and other `extra` tokens are not part of the desugared AST; emit
+    // them directly from the parser's side channel.
+    for extra in &parsed.extras {
+        visitor.emit_extra(extra);
+    }
+    Ok(())
+}
+
+/// A lightweight [`AstNode`] over a piece of side-channel `extra` content
+/// recovered by a custom parser, so it can reuse the tree-sitter location
+/// machinery.
+struct ExtraNode {
+    range: yeast::Range,
+    text: String,
+}
+
+impl AstNode for ExtraNode {
+    fn kind(&self) -> &str {
+        "extra"
+    }
+    fn is_named(&self) -> bool {
+        false
+    }
+    fn is_missing(&self) -> bool {
+        false
+    }
+    fn is_error(&self) -> bool {
+        false
+    }
+    fn is_extra(&self) -> bool {
+        true
+    }
+    fn start_position(&self) -> tree_sitter::Point {
+        tree_sitter::Point {
+            row: self.range.start_point.row,
+            column: self.range.start_point.column,
+        }
+    }
+    fn end_position(&self) -> tree_sitter::Point {
+        tree_sitter::Point {
+            row: self.range.end_point.row,
+            column: self.range.end_point.column,
+        }
+    }
+    fn byte_range(&self) -> std::ops::Range<usize> {
+        self.range.start_byte..self.range.end_byte
+    }
+    fn opt_string_content(&self) -> Option<String> {
+        Some(self.text.clone())
+    }
 }
 
 struct ChildNode {
@@ -231,8 +520,9 @@ struct ChildNode {
 }
 
 struct Visitor<'a> {
-    /// The file path of the source code (as string)
-    path: &'a str,
+    /// A path suitable for diagnostic locations: relative to the source root if possible,
+    /// otherwise a file: URI
+    diagnostics_path: &'a str,
     /// The label to use whenever we need to refer to the `@file` entity of this
     /// source file.
     file_label: trap::Label,
@@ -248,6 +538,8 @@ struct Visitor<'a> {
     ast_node_parent_table_name: String,
     /// Language-specific name of the tokeninfo table
     tokeninfo_table_name: String,
+    /// Language-specific name of the trivia tokeninfo table
+    trivia_tokeninfo_table_name: String,
     /// A lookup table from type name to node types
     schema: &'a NodeTypeMap,
     /// A stack for gathering information from child nodes. Whenever a node is
@@ -264,23 +556,55 @@ impl<'a> Visitor<'a> {
         source: &'a [u8],
         diagnostics_writer: &'a mut diagnostics::LogWriter,
         trap_writer: &'a mut trap::Writer,
-        path: &'a str,
+        diagnostics_path: &'a str,
         file_label: trap::Label,
         language_prefix: &str,
         schema: &'a NodeTypeMap,
     ) -> Visitor<'a> {
         Visitor {
-            path,
+            diagnostics_path,
             file_label,
             source,
             diagnostics_writer,
             trap_writer,
-            ast_node_location_table_name: format!("{}_ast_node_location", language_prefix),
-            ast_node_parent_table_name: format!("{}_ast_node_parent", language_prefix),
-            tokeninfo_table_name: format!("{}_tokeninfo", language_prefix),
+            ast_node_location_table_name: format!("{language_prefix}_ast_node_location"),
+            ast_node_parent_table_name: format!("{language_prefix}_ast_node_parent"),
+            tokeninfo_table_name: format!("{language_prefix}_tokeninfo"),
+            trivia_tokeninfo_table_name: format!("{language_prefix}_trivia_tokeninfo"),
             schema,
             stack: Vec::new(),
         }
+    }
+
+    /// Emit an `extra` token (a location row plus a `trivia_tokeninfo` row) for
+    /// any [`AstNode`], with an explicit `kind` id. Shared by the tree-sitter
+    /// path (kind = the grammar's node kind id) and the custom-parser path
+    /// (kind = a language-defined `extra` kind id).
+    fn emit_extra_from<N: AstNode>(&mut self, node: &N, kind: usize) {
+        let id = self.trap_writer.fresh_id();
+        let loc = location_for(self, self.file_label, node);
+        let loc_label = location_label(self.trap_writer, loc);
+        self.trap_writer.add_tuple(
+            &self.ast_node_location_table_name,
+            vec![trap::Arg::Label(id), trap::Arg::Label(loc_label)],
+        );
+        self.trap_writer.add_tuple(
+            &self.trivia_tokeninfo_table_name,
+            vec![
+                trap::Arg::Label(id),
+                trap::Arg::Int(kind),
+                sliced_source_arg(self.source, node),
+            ],
+        );
+    }
+
+    /// Emit an `extra` token recovered from a parser's side channel.
+    fn emit_extra(&mut self, extra: &ExtraToken) {
+        let node = ExtraNode {
+            range: extra.range,
+            text: extra.text.clone(),
+        };
+        self.emit_extra_from(&node, extra.kind);
     }
 
     fn record_parse_error(&mut self, loc: trap::Label, mesg: &diagnostics::DiagnosticMessage) {
@@ -306,22 +630,22 @@ impl<'a> Visitor<'a> {
         );
     }
 
-    fn record_parse_error_for_node(
+    fn record_parse_error_for_node<N: AstNode>(
         &mut self,
         message: &str,
         args: &[diagnostics::MessageArg],
-        node: Node,
+        node: &N,
         status_page: bool,
     ) {
-        let loc = location_for(self, node);
-        let loc_label = location_label(self.trap_writer, self.file_label, loc);
+        let loc = location_for(self, self.file_label, node);
+        let loc_label = location_label(self.trap_writer, loc);
         let mut mesg = self.diagnostics_writer.new_entry(
             "parse-error",
             "Could not process some files due to syntax errors",
         );
         mesg.severity(diagnostics::Severity::Warning)
             .location(
-                self.path,
+                self.diagnostics_path,
                 loc.start_line,
                 loc.start_column,
                 loc.end_line,
@@ -334,7 +658,7 @@ impl<'a> Visitor<'a> {
         self.record_parse_error(loc_label, &mesg);
     }
 
-    fn enter_node(&mut self, node: Node) -> bool {
+    fn enter_node<N: AstNode>(&mut self, node: &N) -> bool {
         if node.is_missing() {
             self.record_parse_error_for_node(
                 "A parse error occurred (expected {} symbol). Check the syntax of the file. If the file is invalid, correct the error or {} the file from analysis.",
@@ -360,20 +684,21 @@ impl<'a> Visitor<'a> {
         true
     }
 
-    fn leave_node(&mut self, field_name: Option<&'static str>, node: Node) {
+    fn leave_node<N: AstNode>(&mut self, field_name: Option<&'static str>, node: &N) {
         if node.is_error() || node.is_missing() {
             return;
         }
         let (id, _, child_nodes) = self.stack.pop().expect("Vistor: empty stack");
-        let loc = location_for(self, node);
-        let loc_label = location_label(self.trap_writer, self.file_label, loc);
+        let loc = location_for(self, self.file_label, node);
+        let loc_label = location_label(self.trap_writer, loc);
+        let type_name = TypeName {
+            kind: node.kind().to_owned(),
+            named: node.is_named(),
+        };
         let table = self
             .schema
-            .get(&TypeName {
-                kind: node.kind().to_owned(),
-                named: node.is_named(),
-            })
-            .unwrap();
+            .get(&type_name)
+            .unwrap_or_else(|| panic!("missing extractor schema entry for {type_name:?}"));
         let mut valid = true;
         let parent_info = match self.stack.last_mut() {
             Some(p) if !node.is_extra() => {
@@ -411,7 +736,7 @@ impl<'a> Visitor<'a> {
                 fields,
                 name: table_name,
             } => {
-                if let Some(args) = self.complex_node(&node, fields, &child_nodes, id) {
+                if let Some(args) = self.complex_node(node, fields, &child_nodes, id) {
                     self.trap_writer.add_tuple(
                         &self.ast_node_location_table_name,
                         vec![trap::Arg::Label(id), trap::Arg::Label(loc_label)],
@@ -441,7 +766,7 @@ impl<'a> Visitor<'a> {
                         )
                         .severity(diagnostics::Severity::Warning)
                         .location(
-                            self.path,
+                            self.diagnostics_path,
                             loc.start_line,
                             loc.start_column,
                             loc.end_line,
@@ -472,9 +797,9 @@ impl<'a> Visitor<'a> {
         }
     }
 
-    fn complex_node(
+    fn complex_node<N: AstNode>(
         &mut self,
-        node: &Node,
+        node: &N,
         fields: &[Field],
         child_nodes: &[ChildNode],
         parent_id: trap::Label,
@@ -506,7 +831,7 @@ impl<'a> Visitor<'a> {
                             diagnostics::MessageArg::Code(&format!("{:?}", child_node.type_name)),
                             diagnostics::MessageArg::Code(&format!("{:?}", field.type_info)),
                         ],
-                        *node,
+                        node,
                         false,
                     );
                 }
@@ -518,7 +843,7 @@ impl<'a> Visitor<'a> {
                         diagnostics::MessageArg::Code(child_node.field_name.unwrap_or("child")),
                         diagnostics::MessageArg::Code(&format!("{:?}", child_node.type_name)),
                     ],
-                    *node,
+                    node,
                     false,
                 );
             }
@@ -543,7 +868,7 @@ impl<'a> Visitor<'a> {
                             node.kind(),
                             column_name
                         );
-                        self.record_parse_error_for_node(&error_message, &[], *node, false);
+                        self.record_parse_error_for_node(&error_message, &[], node, false);
                     }
                 }
                 Storage::Table {
@@ -559,7 +884,7 @@ impl<'a> Visitor<'a> {
                                     diagnostics::MessageArg::Code(node.kind()),
                                     diagnostics::MessageArg::Code(table_name),
                                 ],
-                                *node,
+                                node,
                                 false,
                             );
                             break;
@@ -574,11 +899,7 @@ impl<'a> Visitor<'a> {
                 }
             }
         }
-        if is_valid {
-            Some(args)
-        } else {
-            None
-        }
+        if is_valid { Some(args) } else { None }
     }
 
     fn type_matches(&self, tp: &TypeName, type_info: &node_types::FieldTypeInfo) -> bool {
@@ -587,10 +908,11 @@ impl<'a> Visitor<'a> {
                 if tp == single_type {
                     return true;
                 }
-                if let EntryKind::Union { members } = &self.schema.get(single_type).unwrap().kind {
-                    if self.type_matches_set(tp, members) {
-                        return true;
-                    }
+                if let EntryKind::Union { members, .. } =
+                    &self.schema.get(single_type).unwrap().kind
+                    && self.type_matches_set(tp, members)
+                {
+                    return true;
                 }
             }
             node_types::FieldTypeInfo::Multiple { types, .. } => {
@@ -598,7 +920,7 @@ impl<'a> Visitor<'a> {
             }
 
             node_types::FieldTypeInfo::ReservedWordInt(int_mapping) => {
-                return !tp.named && int_mapping.contains_key(&tp.kind)
+                return !tp.named && int_mapping.contains_key(&tp.kind);
             }
         }
         false
@@ -608,11 +930,11 @@ impl<'a> Visitor<'a> {
         if types.contains(tp) {
             return true;
         }
-        for other in types.iter() {
-            if let EntryKind::Union { members } = &self.schema.get(other).unwrap().kind {
-                if self.type_matches_set(tp, members) {
-                    return true;
-                }
+        for other in types {
+            if let EntryKind::Union { members, .. } = &self.schema.get(other).unwrap().kind
+                && self.type_matches_set(tp, members)
+            {
+                return true;
             }
         }
         false
@@ -620,15 +942,21 @@ impl<'a> Visitor<'a> {
 }
 
 // Emit a slice of a source file as an Arg.
-fn sliced_source_arg(source: &[u8], n: Node) -> trap::Arg {
-    let range = n.byte_range();
-    trap::Arg::String(String::from_utf8_lossy(&source[range.start..range.end]).into_owned())
+fn sliced_source_arg<N: AstNode>(source: &[u8], n: &N) -> trap::Arg {
+    trap::Arg::String(n.opt_string_content().unwrap_or_else(|| {
+        let range = n.byte_range();
+        String::from_utf8_lossy(&source[range.start..range.end]).into_owned()
+    }))
 }
 
 // Emit a pair of `TrapEntry`s for the provided node, appropriately calibrated.
 // The first is the location and label definition, and the second is the
 // 'Located' entry.
-fn location_for(visitor: &mut Visitor, n: Node) -> trap::Location {
+fn location_for<N: AstNode>(
+    visitor: &mut Visitor,
+    file_label: trap::Label,
+    n: &N,
+) -> trap::Location {
     // Tree-sitter row, column values are 0-based while CodeQL starts
     // counting at 1. In addition Tree-sitter's row and column for the
     // end position are exclusive while CodeQL's end positions are inclusive.
@@ -686,6 +1014,7 @@ fn location_for(visitor: &mut Visitor, n: Node) -> trap::Location {
         }
     }
     trap::Location {
+        file_label,
         start_line,
         start_column,
         end_line,
@@ -695,6 +1024,27 @@ fn location_for(visitor: &mut Visitor, n: Node) -> trap::Location {
 
 fn traverse(tree: &Tree, visitor: &mut Visitor) {
     let cursor = &mut tree.walk();
+    visitor.enter_node(&cursor.node());
+    let mut recurse = true;
+    loop {
+        if recurse && cursor.goto_first_child() {
+            recurse = visitor.enter_node(&cursor.node());
+        } else {
+            visitor.leave_node(cursor.field_name(), &cursor.node());
+
+            if cursor.goto_next_sibling() {
+                recurse = visitor.enter_node(&cursor.node());
+            } else if cursor.goto_parent() {
+                recurse = false;
+            } else {
+                break;
+            }
+        }
+    }
+}
+
+fn traverse_yeast(tree: &yeast::OutputAst, visitor: &mut Visitor) {
+    let mut cursor = tree.walk();
     visitor.enter_node(cursor.node());
     let mut recurse = true;
     loop {

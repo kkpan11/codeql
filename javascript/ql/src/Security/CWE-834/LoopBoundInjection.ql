@@ -8,16 +8,15 @@
  * @id js/loop-bound-injection
  * @tags security
  *       external/cwe/cwe-834
- *       external/cwe/cwe-730
  * @precision high
  */
 
 import javascript
 import semmle.javascript.security.dataflow.LoopBoundInjectionQuery
-import DataFlow::PathGraph
+import LoopBoundInjectionFlow::PathGraph
 
-from Configuration dataflow, DataFlow::PathNode source, DataFlow::PathNode sink
-where dataflow.hasFlowPath(source, sink)
+from LoopBoundInjectionFlow::PathNode source, LoopBoundInjectionFlow::PathNode sink
+where LoopBoundInjectionFlow::flowPath(source, sink)
 select sink, source, sink,
   "Iteration over a user-controlled object with a potentially unbounded .length property from a $@.",
   source, "user-provided value"

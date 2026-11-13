@@ -4,13 +4,17 @@
  * Provides classes and predicates for dealing with MaD flow models specified
  * in data extensions and CSV format.
  *
- * The CSV specification has the following columns:
+ * The extensible relations have the following columns:
  * - Sources:
  *   `namespace; type; subtypes; name; signature; ext; output; kind; provenance`
  * - Sinks:
  *   `namespace; type; subtypes; name; signature; ext; input; kind; provenance`
  * - Summaries:
  *   `namespace; type; subtypes; name; signature; ext; input; output; kind; provenance`
+ * - Barriers:
+ *   `namespace; type; subtypes; name; signature; ext; output; kind; provenance`
+ * - BarrierGuards:
+ *   `namespace; type; subtypes; name; signature; ext; input; acceptingValue; kind; provenance`
  * - Neutrals:
  *   `namespace; type; name; signature; kind; provenance`
  *   A neutral is used to indicate that a callable is neutral with respect to flow (no summary), source (is not a source) or sink (is not a sink).
@@ -28,11 +32,14 @@
  *    types can be short names or fully qualified names (mixing these two options
  *    is not allowed within a single signature).
  * 6. The `ext` column specifies additional API-graph-like edges. Currently
- *    there are only two valid values: "" and "Attribute". The empty string has no
- *    effect. "Attribute" applies if `name` and `signature` were left blank and
- *    acts by selecting an element that is attributed with the attribute type
- *    selected by the first 4 columns. This can be another member such as a field,
- *    property, method, or parameter.
+ *    there are only a few valid values: "", "Attribute", "Attribute.Getter" and "Attribute.Setter".
+ *    The empty string has no effect. "Attribute" applies if `name` and `signature` were left blank
+ *    and acts by selecting an element (except for properties and indexers) that is attributed with
+ *    the attribute type selected by the first 4 columns. This can be another member such as
+ *    a field, method, or parameter. "Attribute.Getter" and "Attribute.Setter" work similar to
+ *    "Attribute", except that they can only be applied to properties and indexers.
+ *    "Attribute.Setter" selects the setter element of a property/indexer and "Attribute.Getter"
+ *    selects the getter.
  * 7. The `input` column specifies how data enters the element selected by the
  *    first 6 columns, and the `output` column specifies how data leaves the
  *    element selected by the first 6 columns. For sinks, an `input` can be either "",
@@ -66,14 +73,17 @@
  *    - "Field[f]": Selects the contents of field `f`.
  *    - "Property[p]": Selects the contents of property `p`.
  *
- * 8. The `kind` column is a tag that can be referenced from QL to determine to
+ * 8. The `acceptingValue` column of barrier guard models specifies the condition
+ *    under which the guard blocks flow. It can be one of "true" or "false". In
+ *    the future "no-exception", "not-zero", "null", "not-null" may be supported.
+ * 9. The `kind` column is a tag that can be referenced from QL to determine to
  *    which classes the interpreted elements should be added. For example, for
  *    sources "remote" indicates a default remote flow source, and for summaries
  *    "taint" indicates a default additional taint step and "value" indicates a
  *    globally applicable value-preserving step. For neutrals the kind can be `summary`,
  *    `source` or `sink` to indicate that the neutral is neutral with respect to
  *    flow (no summary), source (is not a source) or sink (is not a sink).
- * 9. The `provenance` column is a tag to indicate the origin and verification of a model.
+ * 10. The `provenance` column is a tag to indicate the origin and verification of a model.
  *    The format is {origin}-{verification} or just "manual" where the origin describes
  *    the origin of the model and verification describes how the model has been verified.
  *    Some examples are:
@@ -85,7 +95,7 @@
  */
 
 import csharp
-import ExternalFlowExtensions
+private import ExternalFlowExtensions::Extensions as Extensions
 private import DataFlowDispatch
 private import DataFlowPrivate
 private import DataFlowPublic
@@ -94,73 +104,28 @@ private import FlowSummaryImpl::Public
 private import FlowSummaryImpl::Private
 private import FlowSummaryImpl::Private::External
 private import semmle.code.csharp.commons.QualifiedName
+private import semmle.code.csharp.controlflow.Guards
 private import semmle.code.csharp.dispatch.OverridableCallable
 private import semmle.code.csharp.frameworks.System
+private import codeql.dataflow.internal.AccessPathSyntax as AccessPathSyntax
 private import codeql.mad.ModelValidation as SharedModelVal
+private import codeql.mad.static.ModelsAsData as SharedMaD
 
-private predicate relevantNamespace(string namespace) {
-  sourceModel(namespace, _, _, _, _, _, _, _, _, _) or
-  sinkModel(namespace, _, _, _, _, _, _, _, _, _) or
-  summaryModel(namespace, _, _, _, _, _, _, _, _, _, _)
-}
+private module MadInput implements SharedMaD::InputSig { }
 
-private predicate namespaceLink(string shortns, string longns) {
-  relevantNamespace(shortns) and
-  relevantNamespace(longns) and
-  longns.prefix(longns.indexOf(".")) = shortns
-}
+private module MaD = SharedMaD::ModelsAsData<Extensions, MadInput>;
 
-private predicate canonicalNamespace(string namespace) {
-  relevantNamespace(namespace) and not namespaceLink(_, namespace)
-}
-
-private predicate canonicalNamespaceLink(string namespace, string subns) {
-  canonicalNamespace(namespace) and
-  (subns = namespace or namespaceLink(namespace, subns))
-}
-
-/**
- * Holds if MaD framework coverage of `namespace` is `n` api endpoints of the
- * kind `(kind, part)`.
- */
-predicate modelCoverage(string namespace, int namespaces, string kind, string part, int n) {
-  namespaces = strictcount(string subns | canonicalNamespaceLink(namespace, subns)) and
-  (
-    part = "source" and
-    n =
-      strictcount(string subns, string type, boolean subtypes, string name, string signature,
-        string ext, string output, string provenance |
-        canonicalNamespaceLink(namespace, subns) and
-        sourceModel(subns, type, subtypes, name, signature, ext, output, kind, provenance, _)
-      )
-    or
-    part = "sink" and
-    n =
-      strictcount(string subns, string type, boolean subtypes, string name, string signature,
-        string ext, string input, string provenance |
-        canonicalNamespaceLink(namespace, subns) and
-        sinkModel(subns, type, subtypes, name, signature, ext, input, kind, provenance, _)
-      )
-    or
-    part = "summary" and
-    n =
-      strictcount(string subns, string type, boolean subtypes, string name, string signature,
-        string ext, string input, string output, string provenance |
-        canonicalNamespaceLink(namespace, subns) and
-        summaryModel(subns, type, subtypes, name, signature, ext, input, output, kind, provenance, _)
-      )
-  )
-}
+import MaD
 
 /** Provides a query predicate to check the MaD models for validation errors. */
 module ModelValidation {
-  private import codeql.dataflow.internal.AccessPathSyntax as AccessPathSyntax
-
   private predicate getRelevantAccessPath(string path) {
     summaryModel(_, _, _, _, _, _, path, _, _, _, _) or
     summaryModel(_, _, _, _, _, _, _, path, _, _, _) or
     sinkModel(_, _, _, _, _, _, path, _, _, _) or
-    sourceModel(_, _, _, _, _, _, path, _, _, _)
+    sourceModel(_, _, _, _, _, _, path, _, _, _) or
+    barrierModel(_, _, _, _, _, _, path, _, _, _) or
+    barrierGuardModel(_, _, _, _, _, _, path, _, _, _, _)
   }
 
   private module MkAccessPath = AccessPathSyntax::AccessPath<getRelevantAccessPath/1>;
@@ -172,6 +137,8 @@ module ModelValidation {
   private string getInvalidModelInput() {
     exists(string pred, AccessPath input, AccessPathToken part |
       sinkModel(_, _, _, _, _, _, input, _, _, _) and pred = "sink"
+      or
+      barrierGuardModel(_, _, _, _, _, _, input, _, _, _, _) and pred = "barrier guard"
       or
       summaryModel(_, _, _, _, _, _, input, _, _, _, _) and pred = "summary"
     |
@@ -195,6 +162,8 @@ module ModelValidation {
     exists(string pred, AccessPath output, AccessPathToken part |
       sourceModel(_, _, _, _, _, _, output, _, _, _) and pred = "source"
       or
+      barrierModel(_, _, _, _, _, _, output, _, _, _) and pred = "barrier"
+      or
       summaryModel(_, _, _, _, _, _, _, output, _, _, _) and pred = "summary"
     |
       (
@@ -212,11 +181,17 @@ module ModelValidation {
   private module KindValConfig implements SharedModelVal::KindValidationConfigSig {
     predicate summaryKind(string kind) { summaryModel(_, _, _, _, _, _, _, _, kind, _, _) }
 
-    predicate sinkKind(string kind) { sinkModel(_, _, _, _, _, _, _, kind, _, _) }
+    predicate sinkKind(string kind) {
+      sinkModel(_, _, _, _, _, _, _, kind, _, _)
+      or
+      barrierModel(_, _, _, _, _, _, _, kind, _, _)
+      or
+      barrierGuardModel(_, _, _, _, _, _, _, _, kind, _, _)
+    }
 
     predicate sourceKind(string kind) { sourceModel(_, _, _, _, _, _, _, kind, _, _) }
 
-    predicate neutralKind(string kind) { neutralModel(_, _, _, _, kind, _) }
+    predicate neutralKind(string kind) { Extensions::neutralModel(_, _, _, _, kind, _) }
   }
 
   private module KindVal = SharedModelVal::KindValidation<KindValConfig>;
@@ -230,17 +205,23 @@ module ModelValidation {
       or
       sinkModel(namespace, type, _, name, signature, ext, _, _, provenance, _) and pred = "sink"
       or
+      barrierModel(namespace, type, _, name, signature, ext, _, _, provenance, _) and
+      pred = "barrier"
+      or
+      barrierGuardModel(namespace, type, _, name, signature, ext, _, _, _, provenance, _) and
+      pred = "barrier guard"
+      or
       summaryModel(namespace, type, _, name, signature, ext, _, _, _, provenance, _) and
       pred = "summary"
       or
-      neutralModel(namespace, type, name, signature, _, provenance) and
+      Extensions::neutralModel(namespace, type, name, signature, _, provenance) and
       ext = "" and
       pred = "neutral"
     |
       not namespace.regexpMatch("[a-zA-Z0-9_\\.]+") and
       result = "Dubious namespace \"" + namespace + "\" in " + pred + " model."
       or
-      not type.regexpMatch("[a-zA-Z0-9_<>,\\+]+") and
+      not type.regexpMatch("[a-zA-Z0-9_<>,\\(\\)\\+\\.]+") and
       result = "Dubious type \"" + type + "\" in " + pred + " model."
       or
       not name.regexpMatch("[a-zA-Z0-9_<>,\\.]*") and
@@ -249,11 +230,32 @@ module ModelValidation {
       not signature.regexpMatch("|\\([a-zA-Z0-9_<>\\.\\+\\*,\\[\\]]*\\)") and
       result = "Dubious signature \"" + signature + "\" in " + pred + " model."
       or
-      not ext.regexpMatch("|Attribute") and
+      not ext = ["", "Attribute", "Attribute.Getter", "Attribute.Setter"] and
       result = "Unrecognized extra API graph element \"" + ext + "\" in " + pred + " model."
       or
       invalidProvenance(provenance) and
       result = "Unrecognized provenance description \"" + provenance + "\" in " + pred + " model."
+    )
+    or
+    exists(string acceptingValue |
+      barrierGuardModel(_, _, _, _, _, _, _, acceptingValue, _, _, _) and
+      invalidAcceptingValue(acceptingValue) and
+      result =
+        "Unrecognized accepting value description \"" + acceptingValue +
+          "\" in barrier guard model."
+    )
+  }
+
+  private string getIncorrectConstructorSummaryOutput() {
+    exists(string namespace, string type, string name, string output |
+      type = name or
+      type = name + "<" + any(string s)
+    |
+      summaryModel(namespace, type, _, name, _, _, _, output, _, _, _) and
+      output.matches("ReturnValue%") and
+      result =
+        "Constructor model for " + namespace + "." + type +
+          " should use `Argument[this]` in the output, not `ReturnValue`."
     )
   }
 
@@ -262,7 +264,7 @@ module ModelValidation {
     msg =
       [
         getInvalidModelSignature(), getInvalidModelInput(), getInvalidModelOutput(),
-        KindVal::getInvalidModelKind()
+        getIncorrectConstructorSummaryOutput(), KindVal::getInvalidModelKind()
       ]
   }
 }
@@ -274,9 +276,13 @@ private predicate elementSpec(
   or
   sinkModel(namespace, type, subtypes, name, signature, ext, _, _, _, _)
   or
+  barrierModel(namespace, type, subtypes, name, signature, ext, _, _, _, _)
+  or
+  barrierGuardModel(namespace, type, subtypes, name, signature, ext, _, _, _, _, _)
+  or
   summaryModel(namespace, type, subtypes, name, signature, ext, _, _, _, _, _)
   or
-  neutralModel(namespace, type, name, signature, _, _) and ext = "" and subtypes = false
+  Extensions::neutralModel(namespace, type, name, signature, _, _) and ext = "" and subtypes = true
 }
 
 private predicate elementSpec(
@@ -336,7 +342,7 @@ private predicate callableInfo(Callable c, string name, UnboundValueOrRefType de
 private class InterpretedCallable extends Callable {
   InterpretedCallable() {
     exists(string namespace, string type, string name |
-      partialModel(this, namespace, type, name, _) and
+      partialModel(this, namespace, type, _, name, _) and
       elementSpec(namespace, type, _, name, _, _)
     )
     or
@@ -366,43 +372,76 @@ Declaration interpretBaseDeclaration(string namespace, string type, string name,
   )
 }
 
+bindingset[d, ext]
+pragma[inline_late]
+private Declaration interpretExt(Declaration d, ExtPath ext) {
+  ext = "" and result = d
+  or
+  ext.getToken(0) = "Attribute" and
+  (
+    not exists(ext.getToken(1)) and
+    result.(Attributable).getAnAttribute().getType() = d and
+    not result instanceof Property and
+    not result instanceof Indexer
+    or
+    exists(string accessor | accessor = ext.getToken(1) |
+      result.(Accessor).getDeclaration().getAnAttribute().getType() = d and
+      (
+        result instanceof Getter and
+        accessor = "Getter"
+        or
+        result instanceof Setter and
+        accessor = "Setter"
+      )
+    )
+  )
+}
+
 /** Gets the source/sink/summary/neutral element corresponding to the supplied parameters. */
 pragma[nomagic]
 Declaration interpretElement(
-  string namespace, string type, boolean subtypes, string name, string signature, string ext
+  string namespace, string type, boolean subtypes, string name, string signature, string ext,
+  boolean isExact
 ) {
   elementSpec(namespace, type, subtypes, name, signature, ext) and
   exists(Declaration base, Declaration d |
     base = interpretBaseDeclaration(namespace, type, name, signature) and
     (
-      d = base
+      d = base and
+      isExact = true
       or
       subtypes = true and
       (
         d.(UnboundCallable).overridesOrImplementsUnbound(base)
         or
         d = base.(UnboundValueOrRefType).getASubTypeUnbound+()
-      )
+      ) and
+      isExact = false
     )
   |
-    ext = "" and result = d
-    or
-    ext = "Attribute" and result.(Attributable).getAnAttribute().getType() = d
+    result = interpretExt(d, ext)
   )
 }
 
-/**
- * A callable where there exists a MaD sink model that applies to it.
- */
-class SinkCallable extends Callable {
-  SinkCallable() { SourceSinkInterpretationInput::sinkElement(this, _, _, _, _) }
+private predicate relevantExt(string ext) {
+  summaryModel(_, _, _, _, _, ext, _, _, _, _, _) or
+  sourceModel(_, _, _, _, _, ext, _, _, _, _) or
+  sinkModel(_, _, _, _, _, ext, _, _, _, _) or
+  barrierModel(_, _, _, _, _, ext, _, _, _, _) or
+  barrierGuardModel(_, _, _, _, _, ext, _, _, _, _, _)
+}
+
+private class ExtPath = AccessPathSyntax::AccessPath<relevantExt/1>::AccessPath;
+
+private predicate parseSynthField(AccessPathToken c, string name) {
+  c.getName() = "SyntheticField" and name = c.getAnArgument()
 }
 
 /**
- * A callable where there exists a MaD source model that applies to it.
+ * An adapter class for adding synthetic fields from MaD.
  */
-class SourceCallable extends Callable {
-  SourceCallable() { SourceSinkInterpretationInput::sourceElement(this, _, _, _, _) }
+private class SyntheticFieldAdapter extends SyntheticField {
+  SyntheticFieldAdapter() { parseSynthField(_, this) }
 }
 
 cached
@@ -428,6 +467,53 @@ private module Cached {
       isSinkNode(n, kind, model) and n.asNode() = node
     )
   }
+
+  private newtype TKindModelPair =
+    TMkPair(string kind, string model) { isBarrierGuardNode(_, _, kind, model) }
+
+  private GuardValue convertAcceptingValue(AcceptingValue av) {
+    av.isTrue() and result.asBooleanValue() = true
+    or
+    av.isFalse() and result.asBooleanValue() = false
+    or
+    av.isNoException() and result.getDualValue().isThrowsException()
+    or
+    av.isZero() and result.asIntValue() = 0
+    or
+    av.isNotZero() and result.getDualValue().asIntValue() = 0
+    or
+    av.isNull() and result.isNullValue()
+    or
+    av.isNotNull() and result.isNonNullValue()
+  }
+
+  private predicate barrierGuardChecks(Guard g, Expr e, GuardValue gv, TKindModelPair kmp) {
+    exists(
+      SourceSinkInterpretationInput::InterpretNode n, AcceptingValue acceptingValue, string kind,
+      string model
+    |
+      isBarrierGuardNode(n, acceptingValue, kind, model) and
+      n.asNode().asExpr() = e and
+      kmp = TMkPair(kind, model) and
+      gv = convertAcceptingValue(acceptingValue)
+    |
+      g.(Call).getAnArgument() = e or g.(QualifiableExpr).getQualifier() = e
+    )
+  }
+
+  /**
+   * Holds if `node` is specified as a barrier with the given kind in a MaD flow
+   * model.
+   */
+  cached
+  predicate barrierNode(Node node, string kind, string model) {
+    exists(SourceSinkInterpretationInput::InterpretNode n |
+      isBarrierNode(n, kind, model) and n.asNode() = node
+    )
+    or
+    ParameterizedBarrierGuard<TKindModelPair, barrierGuardChecks/4>::getABarrierNode(TMkPair(kind,
+        model)) = node
+  }
 }
 
 import Cached
@@ -443,6 +529,12 @@ predicate sourceNode(Node node, string kind) { sourceNode(node, kind, _) }
  * model.
  */
 predicate sinkNode(Node node, string kind) { sinkNode(node, kind, _) }
+
+/**
+ * Holds if `node` is specified as a barrier with the given kind in a MaD flow
+ * model.
+ */
+predicate barrierNode(Node node, string kind) { barrierNode(node, kind, _) }
 
 private predicate isOverridableCallable(OverridableCallable c) {
   not exists(Type t, Callable base | c.getOverridee+() = base and t = base.getDeclaringType() |
@@ -494,24 +586,11 @@ string parameterQualifiedTypeNamesToString(Callable c) {
 }
 
 predicate partialModel(
-  UnboundCallable c, string namespace, string type, string name, string parameters
+  Callable c, string namespace, string type, string extensible, string name, string parameters
 ) {
   QN::hasQualifiedName(c, namespace, type, name) and
+  extensible = getCallableOverride(c) and
   parameters = "(" + parameterQualifiedTypeNamesToString(c) + ")"
-}
-
-/** Computes the first 6 columns for positive CSV rows of `c`. */
-string asPartialModel(UnboundCallable c) {
-  exists(string namespace, string type, string name, string parameters |
-    partialModel(c, namespace, type, name, parameters) and
-    result =
-      namespace + ";" //
-        + type + ";" //
-        + getCallableOverride(c) + ";" //
-        + name + ";" //
-        + parameters + ";" //
-        + /* ext + */ ";" //
-  )
 }
 
 /**
@@ -519,7 +598,7 @@ string asPartialModel(UnboundCallable c) {
  */
 string getSignature(UnboundCallable c) {
   exists(string namespace, string type, string name, string parameters |
-    partialModel(c, namespace, type, name, parameters)
+    partialModel(c, namespace, type, _, name, parameters)
   |
     result =
       namespace + ";" //
@@ -530,84 +609,50 @@ string getSignature(UnboundCallable c) {
 }
 
 private predicate interpretSummary(
-  UnboundCallable c, string input, string output, string kind, string provenance, string model
+  UnboundCallable c, string input, string output, string kind, string provenance, boolean isExact,
+  string model
 ) {
   exists(
-    string namespace, string type, boolean subtypes, string name, string signature, string ext,
-    QlBuiltins::ExtensionId madId
+    string namespace, string type, boolean subtypes, string name, string signature, string ext
   |
     summaryModel(namespace, type, subtypes, name, signature, ext, input, output, kind, provenance,
-      madId) and
-    model = "MaD:" + madId.toString() and
-    c = interpretElement(namespace, type, subtypes, name, signature, ext)
+      model) and
+    c = interpretElement(namespace, type, subtypes, name, signature, ext, isExact)
   )
 }
 
-private predicate interpretNeutral(UnboundCallable c, string kind, string provenance) {
+predicate interpretNeutral(UnboundCallable c, string kind, string provenance, boolean isExact) {
   exists(string namespace, string type, string name, string signature |
-    neutralModel(namespace, type, name, signature, kind, provenance) and
-    c = interpretElement(namespace, type, false, name, signature, "")
+    Extensions::neutralModel(namespace, type, name, signature, kind, provenance) and
+    c = interpretElement(namespace, type, true, name, signature, "", isExact)
   )
 }
 
 // adapter class for converting Mad summaries to `SummarizedCallable`s
 private class SummarizedCallableAdapter extends SummarizedCallable {
+  string input_;
+  string output_;
+  string kind;
+  Provenance p_;
+  boolean isExact_;
+  string model_;
+
   SummarizedCallableAdapter() {
-    exists(Provenance provenance | interpretSummary(this, _, _, _, provenance, _) |
-      not this.hasBody()
-      or
-      this.hasBody() and provenance.isManual()
-    )
-  }
-
-  private predicate relevantSummaryElementManual(
-    string input, string output, string kind, string model
-  ) {
-    exists(Provenance provenance |
-      interpretSummary(this, input, output, kind, provenance, model) and
-      provenance.isManual()
-    )
-  }
-
-  private predicate relevantSummaryElementGenerated(
-    string input, string output, string kind, string model
-  ) {
-    exists(Provenance provenance |
-      interpretSummary(this, input, output, kind, provenance, model) and
-      provenance.isGenerated()
-    ) and
-    not exists(Provenance provenance |
-      interpretNeutral(this, "summary", provenance) and
-      provenance.isManual()
-    )
+    interpretSummary(this, input_, output_, kind, p_, isExact_, model_)
   }
 
   override predicate propagatesFlow(
-    string input, string output, boolean preservesValue, string model
+    string input, string output, boolean preservesValue, Provenance p, boolean isExact, string model
   ) {
-    exists(string kind |
-      this.relevantSummaryElementManual(input, output, kind, model)
-      or
-      not this.relevantSummaryElementManual(_, _, _, _) and
-      this.relevantSummaryElementGenerated(input, output, kind, model)
-    |
-      if kind = "value" then preservesValue = true else preservesValue = false
-    )
-  }
-
-  override predicate hasProvenance(Provenance provenance) {
-    interpretSummary(this, _, _, _, provenance, _)
+    input = input_ and
+    output = output_ and
+    (if kind = "value" then preservesValue = true else preservesValue = false) and
+    p = p_ and
+    isExact = isExact_ and
+    model = model_
   }
 }
 
-// adapter class for converting Mad neutrals to `NeutralCallable`s
-private class NeutralCallableAdapter extends NeutralCallable {
-  string kind;
-  string provenance_;
+final class SourceCallable = SourceModelCallable;
 
-  NeutralCallableAdapter() { interpretNeutral(this, kind, provenance_) }
-
-  override string getKind() { result = kind }
-
-  override predicate hasProvenance(Provenance provenance) { provenance = provenance_ }
-}
+final class SinkCallable = SinkModelCallable;

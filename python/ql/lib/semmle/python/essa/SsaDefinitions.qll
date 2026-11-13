@@ -2,9 +2,18 @@
  * Provides classes and predicates for determining the uses and definitions of
  * variables for ESSA form.
  */
+overlay[local]
+module;
 
 import python
 private import semmle.python.internal.CachedStages
+
+/** Hold if `expr` is a test (a branch) and `use` is within that test */
+predicate test_contains(ControlFlowNode expr, ControlFlowNode use) {
+  expr.getNode() instanceof Expr and
+  expr.isBranch() and
+  expr.getAChild*() = use
+}
 
 cached
 module SsaSource {
@@ -47,7 +56,7 @@ module SsaSource {
   predicate with_definition(Variable v, ControlFlowNode defn) {
     exists(With with, Name var |
       with.getOptionalVars() = var and
-      var.getAFlowNode() = defn
+      defn.getNode() = var
     |
       var = v.getAStore()
     )
@@ -58,7 +67,7 @@ module SsaSource {
   predicate pattern_capture_definition(Variable v, ControlFlowNode defn) {
     exists(MatchCapturePattern capture, Name var |
       capture.getVariable() = var and
-      var.getAFlowNode() = defn
+      defn.getNode() = var
     |
       var = v.getAStore()
     )
@@ -69,7 +78,7 @@ module SsaSource {
   predicate pattern_alias_definition(Variable v, ControlFlowNode defn) {
     exists(MatchAsPattern pattern, Name var |
       pattern.getAlias() = var and
-      var.getAFlowNode() = defn
+      defn.getNode() = var
     |
       var = v.getAStore()
     )

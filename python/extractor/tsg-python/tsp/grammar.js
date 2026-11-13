@@ -22,6 +22,49 @@ const PREC = {
   call: 21,
 }
 
+// The generator's Unicode properties currently use Unicode 16. Supplement them with
+// the Unicode 17 XID additions for Python 3.15. These can be removed once the generator
+// includes Unicode 17: https://www.unicode.org/Public/17.0.0/ucd/DerivedCoreProperties.txt
+const UNICODE17_XID_START = [
+  String.raw`\u{88F}`,
+  String.raw`\u{C5C}`,
+  String.raw`\u{CDC}`,
+  String.raw`\u{A7CE}-\u{A7CF}`,
+  String.raw`\u{A7D2}`,
+  String.raw`\u{A7D4}`,
+  String.raw`\u{A7F1}`,
+  String.raw`\u{10940}-\u{10959}`,
+  String.raw`\u{10EC5}-\u{10EC7}`,
+  String.raw`\u{11DB0}-\u{11DDB}`,
+  String.raw`\u{16EA0}-\u{16EB8}`,
+  String.raw`\u{16EBB}-\u{16ED3}`,
+  String.raw`\u{16FF2}-\u{16FF6}`,
+  String.raw`\u{187F8}-\u{187FF}`,
+  String.raw`\u{18D09}-\u{18D1E}`,
+  String.raw`\u{18D80}-\u{18DF2}`,
+  String.raw`\u{1E6C0}-\u{1E6DE}`,
+  String.raw`\u{1E6E0}-\u{1E6E2}`,
+  String.raw`\u{1E6E4}-\u{1E6E5}`,
+  String.raw`\u{1E6E7}-\u{1E6ED}`,
+  String.raw`\u{1E6F0}-\u{1E6F4}`,
+  String.raw`\u{1E6FE}-\u{1E6FF}`,
+  String.raw`\u{2B73A}-\u{2B73F}`,
+  String.raw`\u{2CEA2}-\u{2CEAD}`,
+  String.raw`\u{323B0}-\u{33479}`,
+].join('');
+
+const UNICODE17_XID_CONTINUE = UNICODE17_XID_START + [
+  String.raw`\u{1ACF}-\u{1ADD}`,
+  String.raw`\u{1AE0}-\u{1AEB}`,
+  String.raw`\u{10EFA}-\u{10EFB}`,
+  String.raw`\u{11B60}-\u{11B67}`,
+  String.raw`\u{11DE0}-\u{11DE9}`,
+  String.raw`\u{1E6E3}`,
+  String.raw`\u{1E6E6}`,
+  String.raw`\u{1E6EE}-\u{1E6EF}`,
+  String.raw`\u{1E6F5}`,
+].join('');
+
 module.exports = grammar({
   name: 'python',
 
@@ -36,6 +79,7 @@ module.exports = grammar({
     [$.tuple, $.tuple_pattern],
     [$.list, $.list_pattern],
     [$.with_item, $._collection_elements],
+    [$.match_statement, $.primary_expression],
   ],
 
   supertypes: $ => [
@@ -54,6 +98,7 @@ module.exports = grammar({
     $._string_start,
     $._string_content,
     $._string_end,
+    $._template_string_start,
   ],
 
   inline: $ => [
@@ -107,6 +152,7 @@ module.exports = grammar({
     ),
 
     import_statement: $ => seq(
+      optional(field('is_lazy', 'lazy')),
       'import',
       $._import_list
     ),
@@ -129,6 +175,7 @@ module.exports = grammar({
     ),
 
     import_from_statement: $ => seq(
+      optional(field('is_lazy', 'lazy')),
       'from',
       field('module_name', choice(
         $.relative_import,
@@ -295,12 +342,21 @@ module.exports = grammar({
       )
     ),
 
+    exception_list: $ => seq(
+      field('element', $.expression),
+      repeat1(
+        seq(
+          ',',
+          field('element', $.expression))
+        )
+      ),
+
     except_clause: $ => seq(
       'except',
       optional(seq(
-        field('type', $.expression),
+        field('type', choice($.expression, $.exception_list)),
         optional(seq(
-          choice('as', ','),
+          'as',
           field('alias', $.expression)
         ))
       )),
@@ -309,9 +365,10 @@ module.exports = grammar({
     ),
 
     except_group_clause: $ => seq(
-      'except*',
+      'except',
+      '*',
       seq(
-        field('type', $.expression),
+        field('type', choice($.expression, $.exception_list)),
         optional(seq(
           'as',
           field('alias', $.expression)
@@ -348,7 +405,7 @@ module.exports = grammar({
       ))
     )),
 
-    match_statement: $ => seq(
+    match_statement: $ => prec(-3, seq(
       'match',
       field('subject',
         choice(
@@ -358,7 +415,7 @@ module.exports = grammar({
       ),
       ':',
       field('cases', $.cases)
-    ),
+    )),
 
     cases: $ => repeat1($.case_block),
 
@@ -412,7 +469,7 @@ module.exports = grammar({
 
     match_literal_pattern: $ => choice(
       seq(
-        optional(field('prefix_operator', '-')),
+        optional(field('prefix_operator', choice('-', '+'))),
         field('real', choice($.integer, $.float)),
         optional(seq(
           field('operator', choice('+', '-')),
@@ -421,6 +478,8 @@ module.exports = grammar({
       ),
       $.string,
       $.concatenated_string,
+      $.template_string,
+      $.concatenated_template_string,
       $.none,
       $.true,
       $.false
@@ -579,6 +638,7 @@ module.exports = grammar({
     type_parameters: $ => seq(
       '[',
       commaSep1(field('type_parameter', $._type_parameter)),
+      optional(','),
       ']'
     ),
 
@@ -589,23 +649,31 @@ module.exports = grammar({
 
     typevar_parameter: $ => seq(
       field('name', $.identifier),
-      optional($._type_bound)
+      optional($._type_bound),
+      optional($._type_param_default)
     ),
 
     typevartuple_parameter: $ => seq(
       '*',
       field('name', $.identifier),
+      optional($._type_param_default)
     ),
 
     paramspec_parameter: $ => seq(
       '**',
       field('name', $.identifier),
+      optional($._type_param_default),
     ),
 
     _type_parameter: $ => choice(
         $.typevar_parameter,
         $.typevartuple_parameter,
         $.paramspec_parameter,
+    ),
+
+    _type_param_default: $ => seq(
+      '=',
+      field('default', choice($.list_splat, $.expression))
     ),
 
     parenthesized_list_splat: $ => prec(PREC.parenthesized_list_splat, seq(
@@ -742,7 +810,6 @@ module.exports = grammar({
       $.comparison_operator,
       $.not_operator,
       $.boolean_operator,
-      $.await,
       $.lambda,
       $.primary_expression,
       $.conditional_expression,
@@ -750,11 +817,14 @@ module.exports = grammar({
     ),
 
     primary_expression: $ => choice(
+      $.await,
       $.binary_operator,
       $.identifier,
       $.keyword_identifier,
       $.string,
       $.concatenated_string,
+      $.template_string,
+      $.concatenated_template_string,
       $.integer,
       $.float,
       $.true,
@@ -920,11 +990,18 @@ module.exports = grammar({
       field('attribute', $.identifier)
     )),
 
+    _index_expression: $ => choice(
+      $.list_splat,
+      $.expression,
+      $.slice
+    ),
+
+    index_expression_list: $ => open_sequence(field('element', $._index_expression)),
+
     subscript: $ => prec(PREC.call, seq(
       field('value', $.primary_expression),
       '[',
-      commaSep1(field('subscript', choice($.expression, $.slice))),
-      optional(','),
+      field('subscript', choice($._index_expression, $.index_expression_list)),
       ']'
     )),
 
@@ -955,7 +1032,7 @@ module.exports = grammar({
       field('type', $.type)
     )),
 
-    type: $ => $.expression,
+    type: $ => choice($.list_splat, $.expression),
 
     keyword_argument: $ => seq(
       field('name', choice($.identifier, $.keyword_identifier)),
@@ -998,28 +1075,28 @@ module.exports = grammar({
 
     list_comprehension: $ => seq(
       '[',
-      field('body', $.expression),
+      field('body', choice($.expression, $.list_splat)),
       $._comprehension_clauses,
       ']'
     ),
 
     dictionary_comprehension: $ => seq(
       '{',
-      field('body', $.pair),
+      field('body', choice($.pair, $.dictionary_splat)),
       $._comprehension_clauses,
       '}'
     ),
 
     set_comprehension: $ => seq(
       '{',
-      field('body', $.expression),
+      field('body', choice($.expression, $.list_splat)),
       $._comprehension_clauses,
       '}'
     ),
 
     generator_expression: $ => seq(
       '(',
-      field('body', $.expression),
+      field('body', choice($.expression, $.list_splat)),
       $._comprehension_clauses,
       ')'
     ),
@@ -1082,6 +1159,20 @@ module.exports = grammar({
       field('suffix', alias($._string_end, '"'))
     ),
 
+    concatenated_template_string: $ => seq(
+      $.template_string,
+      repeat1($.template_string)
+    ),
+
+    template_string: $ => seq(
+      field('prefix', alias($._template_string_start, '"')),
+      repeat(choice(
+        field('interpolation', $.interpolation),
+        field('string_content', $.string_content)
+      )),
+      field('suffix', alias($._string_end, '"'))
+    ),
+
     string_content: $ => prec.right(0, repeat1(
       choice(
         $._escape_interpolation,
@@ -1123,7 +1214,7 @@ module.exports = grammar({
     _not_escape_sequence: $ => token.immediate('\\'),
 
     format_specifier: $ => seq(
-      ':',
+      token(prec(1,':')),
       repeat(choice(
         token(prec(1, /[^{}\n]+/)),
         alias($.interpolation, $.format_expression)
@@ -1173,7 +1264,10 @@ module.exports = grammar({
       ))
     },
 
-    identifier: $ => /[_\p{XID_Start}][_\p{XID_Continue}]*/,
+    identifier: $ => new RegExp(
+      `[_\\p{XID_Start}${UNICODE17_XID_START}][_\\p{XID_Continue}${UNICODE17_XID_CONTINUE}]*`,
+      'u'
+    ),
 
     keyword_identifier: $ => prec(-3, alias(
       choice(
@@ -1183,6 +1277,7 @@ module.exports = grammar({
         'await',
         'match',
         'type',
+        'lazy',
       ),
       $.identifier
     )),
@@ -1193,7 +1288,7 @@ module.exports = grammar({
 
     await: $ => prec(PREC.unary, seq(
       'await',
-      $.expression
+      $.primary_expression
     )),
 
     comment: $ => token(seq('#', /.*/)),

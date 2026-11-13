@@ -1,4 +1,6 @@
 /** Provides classes to reason about XSLT injection vulnerabilities. */
+overlay[local?]
+module;
 
 import java
 import semmle.code.java.dataflow.DataFlow
@@ -161,17 +163,17 @@ private predicate xsltPackageStep(DataFlow::Node n1, DataFlow::Node n2) {
 
 /** The class `javax.xml.transform.stax.StAXSource`. */
 private class TypeStAXSource extends Class {
-  TypeStAXSource() { this.hasQualifiedName("javax.xml.transform.stax", "StAXSource") }
+  TypeStAXSource() { this.hasQualifiedName(javaxOrJakarta() + ".xml.transform.stax", "StAXSource") }
 }
 
 /** The class `javax.xml.transform.dom.DOMSource`. */
 private class TypeDomSource extends Class {
-  TypeDomSource() { this.hasQualifiedName("javax.xml.transform.dom", "DOMSource") }
+  TypeDomSource() { this.hasQualifiedName(javaxOrJakarta() + ".xml.transform.dom", "DOMSource") }
 }
 
 /** The interface `javax.xml.transform.Templates`. */
 private class TypeTemplates extends Interface {
-  TypeTemplates() { this.hasQualifiedName("javax.xml.transform", "Templates") }
+  TypeTemplates() { this.hasQualifiedName(javaxOrJakarta() + ".xml.transform", "Templates") }
 }
 
 /** The class `net.sf.saxon.s9api.XsltCompiler`. */
@@ -203,7 +205,7 @@ private class DocumentBuilderParse extends MethodCall {
 
 /** The class `javax.xml.parsers.DocumentBuilder`. */
 private class DocumentBuilder extends RefType {
-  DocumentBuilder() { this.hasQualifiedName("javax.xml.parsers", "DocumentBuilder") }
+  DocumentBuilder() { this.hasQualifiedName(javaxOrJakarta() + ".xml.parsers", "DocumentBuilder") }
 }
 
 /** A call to `XMLInputFactory.createXMLStreamReader`. */
@@ -230,5 +232,5 @@ private class XmlInputFactoryEventReader extends MethodCall {
 
 /** The class `javax.xml.stream.XMLInputFactory`. */
 private class XmlInputFactory extends RefType {
-  XmlInputFactory() { this.hasQualifiedName("javax.xml.stream", "XMLInputFactory") }
+  XmlInputFactory() { this.hasQualifiedName(javaxOrJakarta() + ".xml.stream", "XMLInputFactory") }
 }

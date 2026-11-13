@@ -111,10 +111,8 @@ private class CaptureNodeImpl extends CaptureNode, NodeImpl {
 }
 
 private predicate localFlowSsaInput(Node nodeFrom, Ssa::Definition def, Ssa::Definition next) {
-  exists(BasicBlock bb, int i | def.lastRefRedef(bb, i, next) |
-    def.definesAt(_, bb, i) and
-    def = nodeFrom.asDefinition()
-  )
+  next.(Ssa::PhiDefinition).getAPhiInput() = def and
+  def = nodeFrom.asDefinition()
 }
 
 /** A collection of cached types and predicates to be evaluated in the same stage. */
@@ -307,8 +305,7 @@ private module Cached {
     model = ""
     or
     // flow through a flow summary (extension of `SummaryModelCsv`)
-    FlowSummaryImpl::Private::Steps::summaryLocalStep(nodeFrom.(FlowSummaryNode).getSummaryNode(),
-      nodeTo.(FlowSummaryNode).getSummaryNode(), true, model)
+    FlowSummaryImpl::Private::Steps::summaryLocalStep(nodeFrom, nodeTo, true, model)
   }
 
   /**
@@ -499,10 +496,10 @@ class FlowSummaryNode extends NodeImpl, TFlowSummaryNode {
   }
 
   override DataFlowCallable getEnclosingCallable() {
-    result.asSummarizedCallable() = this.getSummarizedCallable()
+    result = this.getSummaryNode().getEnclosingCallable()
   }
 
-  override Location getLocationImpl() { result = this.getSummarizedCallable().getLocation() }
+  override Location getLocationImpl() { result = this.getSummaryNode().getLocation() }
 
   override string toStringImpl() { result = this.getSummaryNode().toString() }
 }
@@ -884,23 +881,11 @@ private predicate closureFlowStep(CaptureInput::Expr e1, CaptureInput::Expr e2) 
   e2.(Pattern).getImmediateMatchingExpr() = e1
 }
 
-private module CaptureInput implements VariableCapture::InputSig<Location> {
+private module CaptureInput implements VariableCapture::InputSig<Location, BasicBlock> {
   private import swift as S
-  private import codeql.swift.controlflow.BasicBlocks as B
+  private import codeql.swift.controlflow.ControlFlowGraph as Cfg
 
-  class BasicBlock instanceof B::BasicBlock {
-    string toString() { result = super.toString() }
-
-    Callable getEnclosingCallable() { result = super.getScope() }
-
-    Location getLocation() { result = super.getLocation() }
-  }
-
-  BasicBlock getImmediateBasicBlockDominator(BasicBlock bb) {
-    result.(B::BasicBlock).immediatelyDominates(bb)
-  }
-
-  BasicBlock getABasicBlockSuccessor(BasicBlock bb) { result = bb.(B::BasicBlock).getASuccessor() }
+  Callable basicBlockGetEnclosingCallable(BasicBlock bb) { result = bb.getScope() }
 
   class CapturedVariable instanceof S::VarDecl {
     CapturedVariable() {
@@ -922,9 +907,7 @@ private module CaptureInput implements VariableCapture::InputSig<Location> {
 
     Location getLocation() { result = super.getLocation() }
 
-    predicate hasCfgNode(BasicBlock bb, int i) {
-      this = bb.(B::BasicBlock).getNode(i).getNode().asAstNode()
-    }
+    predicate hasCfgNode(BasicBlock bb, int i) { this = bb.getNode(i).getNode().asAstNode() }
   }
 
   class VariableWrite extends Expr {
@@ -996,7 +979,7 @@ class CapturedVariable = CaptureInput::CapturedVariable;
 
 class CapturedParameter = CaptureInput::CapturedParameter;
 
-module CaptureFlow = VariableCapture::Flow<Location, CaptureInput>;
+module CaptureFlow = VariableCapture::Flow<Location, Cfg, CaptureInput>;
 
 private CaptureFlow::ClosureNode asClosureNode(Node n) {
   result = n.(CaptureNode).getSynthesizedCaptureNode()
@@ -1030,8 +1013,7 @@ predicate captureValueStep(Node node1, Node node2) {
 
 predicate jumpStep(Node pred, Node succ) {
   // models-as-data summarized flow
-  FlowSummaryImpl::Private::Steps::summaryJumpStep(pred.(FlowSummaryNode).getSummaryNode(),
-    succ.(FlowSummaryNode).getSummaryNode())
+  FlowSummaryImpl::Private::Steps::summaryJumpStep(pred, succ)
 }
 
 predicate storeStep(Node node1, ContentSet c, Node node2) {
@@ -1303,14 +1285,10 @@ DataFlowType getNodeType(Node n) {
   any() // return the singleton DataFlowType until we support type pruning for Swift
 }
 
-/** Gets a string representation of a `DataFlowType`. */
-string ppReprType(DataFlowType t) { none() }
-
 /**
  * Holds if `t1` and `t2` are compatible, that is, whether data can flow from
  * a node of type `t1` to a node of type `t2`.
  */
-pragma[inline]
 predicate compatibleTypes(DataFlowType t1, DataFlowType t2) { any() }
 
 abstract class PostUpdateNodeImpl extends Node {
@@ -1375,8 +1353,6 @@ class NodeRegion instanceof Unit {
   string toString() { result = "NodeRegion" }
 
   predicate contains(Node n) { none() }
-
-  int totalOrder() { result = 1 }
 }
 
 /**

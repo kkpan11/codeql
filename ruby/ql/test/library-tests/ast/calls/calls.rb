@@ -4,9 +4,6 @@ foo()
 # call whose name is a scope resolution
 Foo::bar()
 
-# call whose name is a global scope resolution
-::bar()
-
 # call with a receiver, no arguments or block
 123.bar
 
@@ -256,6 +253,10 @@ end
 begin
 rescue X::foo
 ensure X::bar
+end
+begin
+rescue foo, X::bar
+ensure baz
 end
 
 # rescue-modifier body and handler

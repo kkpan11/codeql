@@ -9,6 +9,7 @@
  * @security-severity 8.2
  * @precision high
  * @tags security
+ *       external/cwe/cwe-073
  *       external/cwe/cwe-114
  */
 
@@ -21,7 +22,7 @@ import AssemblyPathInjection::PathGraph
  * A taint-tracking configuration for untrusted user input used to load a DLL.
  */
 module AssemblyPathInjectionConfig implements DataFlow::ConfigSig {
-  predicate isSource(DataFlow::Node source) { source instanceof ThreatModelFlowSource }
+  predicate isSource(DataFlow::Node source) { source instanceof ActiveThreatModelSource }
 
   predicate isSink(DataFlow::Node sink) {
     exists(MethodCall mc, string name, int arg |
@@ -41,6 +42,8 @@ module AssemblyPathInjectionConfig implements DataFlow::ConfigSig {
       name = "UnsafeLoadFrom" and arg = 0
     )
   }
+
+  predicate observeDiffInformedIncrementalMode() { any() }
 }
 
 /**

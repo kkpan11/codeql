@@ -2,11 +2,10 @@
  * @name Ignored return value
  * @description Ignoring return values may result in discarding errors or loss of information.
  * @kind problem
- * @tags reliability
+ * @tags quality
+ *       reliability
+ *       correctness
  *       readability
- *       convention
- *       statistical
- *       non-attributable
  *       external/cwe/cwe-252
  * @problem.severity recommendation
  * @sub-severity high
@@ -15,7 +14,7 @@
  */
 
 import python
-import semmle.python.objects.Callables
+private import LegacyPointsTo
 
 predicate meaningful_return_value(Expr val) {
   val instanceof Name
@@ -70,7 +69,12 @@ where
   returns_meaningful_value(callee) and
   not wrapped_in_try_except(call) and
   exists(int unused |
-    unused = count(ExprStmt e | e.getValue().getAFlowNode() = callee.getACall()) and
+    unused =
+      count(ExprStmt e |
+        exists(ControlFlowNode eValCfg | eValCfg.getNode() = e.getValue() |
+          eValCfg = callee.getACall()
+        )
+      ) and
     total = count(callee.getACall())
   |
     percentage_used = (100.0 * (total - unused) / total).floor()

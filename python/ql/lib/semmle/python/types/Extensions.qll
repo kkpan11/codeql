@@ -15,7 +15,8 @@ private import semmle.python.pointsto.PointsTo
 private import semmle.python.pointsto.PointsToContext
 private import semmle.python.objects.TObject
 /* Make ObjectInternal visible to save extra imports in user code */
-import semmle.python.objects.ObjectInternal
+private import semmle.python.objects.ObjectInternal
+private import semmle.python.pointsto.Context
 
 abstract class PointsToExtension extends @py_flow_node {
   string toString() { result = "PointsToExtension with missing toString" }
@@ -35,8 +36,8 @@ class RangeIterationVariableFact extends PointsToExtension {
   RangeIterationVariableFact() {
     exists(For f, ControlFlowNode iterable |
       iterable.getBasicBlock().dominates(this.(ControlFlowNode).getBasicBlock()) and
-      f.getIter().getAFlowNode() = iterable and
-      f.getTarget().getAFlowNode() = this and
+      iterable.getNode() = f.getIter() and
+      this.(ControlFlowNode).getNode() = f.getTarget() and
       exists(ObjectInternal range |
         PointsTo::pointsTo(iterable, _, range, _) and
         range.getClass() = ObjectInternal::builtin("range")

@@ -35,6 +35,7 @@ module Stages {
    * Computes predicates based on the AST.
    * These include SSA and basic-blocks.
    */
+  overlay[local]
   cached
   module AST {
     /**
@@ -76,7 +77,7 @@ module Stages {
       or
       exists(any(AstExtended::AstNode n).getParentNode())
       or
-      exists(any(AstExtended::AstNode n).getAFlowNode())
+      exists(PyFlow::ControlFlowNode cfg, AstExtended::AstNode n | cfg.getNode() = n)
       or
       exists(any(PyFlow::BasicBlock b).getImmediateDominator())
       or
@@ -176,6 +177,7 @@ module Stages {
      * Always holds.
      * Ensures that a predicate is evaluated as part of the DataFlow stage.
      */
+    overlay[local]
     cached
     predicate ref() { 1 = 1 }
 

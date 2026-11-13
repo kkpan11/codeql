@@ -54,23 +54,29 @@ impl Autobuilder {
         let mut cmd = Command::new(codeql);
         cmd.arg("database").arg("index-files");
 
+        let verbosity = env::var("CODEQL_VERBOSITY");
+
+        if let Ok(verbosity) = verbosity {
+            cmd.arg(format!("--verbosity={verbosity}"));
+        }
+
         for ext in &self.include_extensions {
-            cmd.arg(format!("--include-extension={}", ext));
+            cmd.arg(format!("--include-extension={ext}"));
         }
 
         for glob in &self.include_globs {
-            cmd.arg(format!("--include={}", glob));
+            cmd.arg(format!("--include={glob}"));
         }
 
         for glob in &self.exclude_globs {
-            cmd.arg(format!("--exclude={}", glob));
+            cmd.arg(format!("--exclude={glob}"));
         }
 
         if let Some(limit) = &self.size_limit {
-            cmd.arg(format!("--size-limit={}", limit));
+            cmd.arg(format!("--size-limit={limit}"));
         }
 
-        cmd.arg(format!("--language={}", &self.language));
+        cmd.arg(format!("--language={}", self.language));
         cmd.arg("--working-dir=.");
         cmd.arg(&self.database);
 

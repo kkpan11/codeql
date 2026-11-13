@@ -76,12 +76,6 @@ codeql::DependentMemberType TypeTranslator::translateDependentMemberType(
   return entry;
 }
 
-codeql::ParenType TypeTranslator::translateParenType(const swift::ParenType& type) {
-  auto entry = createTypeEntry(type);
-  entry.type = dispatcher.fetchLabel(type.getUnderlyingType());
-  return entry;
-}
-
 codeql::OptionalType TypeTranslator::translateOptionalType(const swift::OptionalType& type) {
   auto entry = createTypeEntry(type);
   fillUnarySyntaxSugarType(type, entry);
@@ -91,6 +85,14 @@ codeql::OptionalType TypeTranslator::translateOptionalType(const swift::Optional
 codeql::ArraySliceType TypeTranslator::translateArraySliceType(const swift::ArraySliceType& type) {
   auto entry = createTypeEntry(type);
   fillUnarySyntaxSugarType(type, entry);
+  return entry;
+}
+
+codeql::InlineArrayType TypeTranslator::translateInlineArrayType(
+    const swift::InlineArrayType& type) {
+  auto entry = createTypeEntry(type);
+  entry.count_type = dispatcher.fetchLabel(type.getCountType());
+  entry.element_type = dispatcher.fetchLabel(type.getElementType());
   return entry;
 }
 
@@ -231,8 +233,16 @@ codeql::BuiltinIntegerType TypeTranslator::translateBuiltinIntegerType(
   return entry;
 }
 
-codeql::OpenedArchetypeType TypeTranslator::translateOpenedArchetypeType(
-    const swift::OpenedArchetypeType& type) {
+codeql::BuiltinFixedArrayType TypeTranslator::translateBuiltinFixedArrayType(
+    const swift::BuiltinFixedArrayType& type) {
+  auto entry = createTypeEntry(type);
+  entry.size = dispatcher.fetchLabel(type.getSize());
+  entry.element_type = dispatcher.fetchLabel(type.getElementType());
+  return entry;
+}
+
+codeql::ExistentialArchetypeType TypeTranslator::translateExistentialArchetypeType(
+    const swift::ExistentialArchetypeType& type) {
   auto entry = createTypeEntry(type);
   fillArchetypeType(type, entry);
   return entry;
@@ -253,10 +263,6 @@ codeql::OpaqueTypeArchetypeType TypeTranslator::translateOpaqueTypeArchetypeType
 }
 
 codeql::ErrorType TypeTranslator::translateErrorType(const swift::ErrorType& type) {
-  return createTypeEntry(type);
-}
-
-codeql::UnresolvedType TypeTranslator::translateUnresolvedType(const swift::UnresolvedType& type) {
   return createTypeEntry(type);
 }
 
@@ -300,6 +306,12 @@ codeql::PackExpansionType TypeTranslator::translatePackExpansionType(
   auto entry = createTypeEntry(type);
   entry.pattern_type = dispatcher.fetchLabel(type.getPatternType());
   entry.count_type = dispatcher.fetchLabel(type.getCountType());
+  return entry;
+}
+
+codeql::IntegerType TypeTranslator::translateIntegerType(const swift::IntegerType& type) {
+  auto entry = createTypeEntry(type);
+  entry.value = type.getDigitsText();
   return entry;
 }
 

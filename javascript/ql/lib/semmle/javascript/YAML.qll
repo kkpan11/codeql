@@ -4,13 +4,13 @@
  * YAML documents are represented as abstract syntax trees whose nodes
  * are either YAML values or alias nodes referring to another YAML value.
  */
+overlay[local?]
+module;
 
 import javascript
 private import codeql.yaml.Yaml as LibYaml
 
 private module YamlSig implements LibYaml::InputSig {
-  class Location = DbLocation;
-
   class LocatableBase extends @yaml_locatable, Locatable { }
 
   import javascript
@@ -44,6 +44,12 @@ private module YamlSig implements LibYaml::InputSig {
   class ParseErrorBase extends LocatableBase, @yaml_error {
     string getMessage() { yaml_errors(this, result) }
   }
+
+  class CommentBase extends LocatableBase, @yaml_comment {
+    string getText() { yaml_comments(this, result, _) }
+
+    override string toString() { yaml_comments(this, _, result) }
+  }
 }
 
 import LibYaml::Make<YamlSig>
@@ -54,12 +60,3 @@ private class MyYmlNode extends Locatable instanceof YamlNode {
 
   override string toString() { result = YamlNode.super.toString() }
 }
-
-/** DEPRECATED: Alias for YamlNode */
-deprecated class YAMLNode = YamlNode;
-
-/** DEPRECATED: Alias for YamlValue */
-deprecated class YAMLValue = YamlValue;
-
-/** DEPRECATED: Alias for YamlScalar */
-deprecated class YAMLScalar = YamlScalar;

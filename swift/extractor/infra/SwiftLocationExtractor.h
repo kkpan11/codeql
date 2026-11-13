@@ -1,6 +1,7 @@
 #pragma once
 
 #include <swift/AST/ASTAllocated.h>
+#include <llvm/ADT/DenseMap.h>  // needed (but not included) by the following header
 #include <swift/AST/AvailabilitySpec.h>
 #include <swift/AST/Expr.h>
 #include <swift/AST/SourceFile.h>
@@ -29,10 +30,11 @@ template <typename T>
 concept HasLAndRParenLoc = requires(T e) {
   e.getLParenLoc();
   e.getRParenLoc();
-} && !(HasSourceRange<T>)&&!(HasStartAndEndLoc<T>);
+} && !(HasSourceRange<T>) && !(HasStartAndEndLoc<T>);
 
 template <typename T>
-concept HasOneLoc = requires(T e) { e.getLoc(); } && !(HasSourceRange<T>)&&(!HasStartAndEndLoc<T>);
+concept HasOneLoc =
+    requires(T e) { e.getLoc(); } && !(HasSourceRange<T>) && (!HasStartAndEndLoc<T>);
 
 template <typename T>
 concept HasOneLocField = requires(T e) { e.Loc; };

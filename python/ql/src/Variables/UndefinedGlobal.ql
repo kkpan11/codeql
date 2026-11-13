@@ -11,9 +11,10 @@
  */
 
 import python
+private import LegacyPointsTo
+private import semmle.python.types.ImportTime
 import Variables.MonkeyPatched
 import Loop
-import semmle.python.pointsto.PointsTo
 
 predicate guarded_against_name_error(Name u) {
   exists(Try t | t.getBody().getAnItem().contains(u) |
@@ -26,7 +27,7 @@ predicate guarded_against_name_error(Name u) {
   |
     globals.getFunc().(Name).getId() = "globals" and
     guard.controls(controlled, _) and
-    controlled.contains(u.getAFlowNode())
+    exists(ControlFlowNode uCfg | uCfg.getNode() = u | controlled.contains(uCfg))
   )
 }
 
@@ -61,7 +62,7 @@ predicate undefined_use_in_function(Name u) {
   not u.getEnclosingModule().(ImportTimeScope).definesName(u.getId()) and
   not exists(ModuleValue m | m.getScope() = u.getEnclosingModule() | m.hasAttribute(u.getId())) and
   not globallyDefinedName(u.getId()) and
-  not exists(SsaVariable var | var.getAUse().getNode() = u and not var.maybeUndefined()) and
+  not exists(SsaVariableWithPointsTo var | var.getAUse().getNode() = u and not var.maybeUndefined()) and
   not guarded_against_name_error(u) and
   not (u.getEnclosingModule().isPackageInit() and u.getId() = "__path__")
 }
@@ -69,7 +70,7 @@ predicate undefined_use_in_function(Name u) {
 predicate undefined_use_in_class_or_module(Name u) {
   exists(GlobalVariable v | u.uses(v)) and
   not u.getScope().getScope*() instanceof Function and
-  exists(SsaVariable var | var.getAUse().getNode() = u | var.maybeUndefined()) and
+  exists(SsaVariableWithPointsTo var | var.getAUse().getNode() = u | var.maybeUndefined()) and
   not guarded_against_name_error(u) and
   not exists(ModuleValue m | m.getScope() = u.getEnclosingModule() | m.hasAttribute(u.getId())) and
   not (u.getEnclosingModule().isPackageInit() and u.getId() = "__path__") and
@@ -95,23 +96,23 @@ predicate undefined_use(Name u) {
   not contains_unknown_import_star(u.getEnclosingModule()) and
   not use_of_exec(u.getEnclosingModule()) and
   not exists(u.getVariable().getAStore()) and
-  not u.pointsTo(_) and
+  not u.(ExprWithPointsTo).pointsTo(_) and
   not probably_defined_in_loop(u)
 }
 
 private predicate first_use_in_a_block(Name use) {
-  exists(GlobalVariable v, BasicBlock b, int i |
-    i = min(int j | b.getNode(j).getNode() = v.getALoad()) and b.getNode(i) = use.getAFlowNode()
+  exists(GlobalVariable v, BasicBlock b, int i, ControlFlowNode useCfg | useCfg.getNode() = use |
+    i = min(int j | b.getNode(j).getNode() = v.getALoad()) and b.getNode(i) = useCfg
   )
 }
 
 predicate first_undefined_use(Name use) {
   undefined_use(use) and
-  exists(GlobalVariable v | v.getALoad() = use |
+  exists(GlobalVariable v, ControlFlowNode useCfg | v.getALoad() = use and useCfg.getNode() = use |
     first_use_in_a_block(use) and
     not exists(ControlFlowNode other |
       other.getNode() = v.getALoad() and
-      other.getBasicBlock().strictlyDominates(use.getAFlowNode().getBasicBlock())
+      other.getBasicBlock().strictlyDominates(useCfg.getBasicBlock())
     )
   )
 }

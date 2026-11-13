@@ -12,6 +12,7 @@ private import TranslatedFunction
 private import TranslatedStmt
 private import TranslatedExpr
 private import IRConstruction
+private import TranslatedAssertion
 private import semmle.code.cpp.models.interfaces.SideEffect
 private import SideEffects
 
@@ -123,15 +124,29 @@ private predicate ignoreExprAndDescendants(Expr expr) {
   //  or
   ignoreExprAndDescendants(getRealParent(expr)) // recursive case
   or
-  // va_start doesn't evaluate its argument, so we don't need to translate it.
+  // va_start does not evaluate its argument, so we do not need to translate it.
   exists(BuiltInVarArgsStart vaStartExpr |
     vaStartExpr.getLastNamedParameter().getFullyConverted() = expr
   )
+  or
+  // sizeof does not evaluate its argument, so we do not need to translate it.
+  exists(SizeofExprOperator sizeofExpr | sizeofExpr.getExprOperand().getFullyConverted() = expr)
+  or
+  // The children of C11 _Generic expressions are just surface syntax.
+  exists(C11GenericExpr generic | generic.getAChild().getFullyConverted() = expr)
   or
   // Do not translate implicit destructor calls for unnamed temporary variables that are
   // conditionally constructed (until we have a mechanism for calling these only when the
   // temporary's constructor was run)
   isConditionalTemporaryDestructorCall(expr)
+  or
+  // An assertion in a release build is often defined as `#define assert(x) ((void)0)`.
+  // We generate a synthetic assertion in release builds, and when we do that the
+  // expression `((void)0)` should not be translated.
+  exists(MacroInvocation mi |
+    assertion(mi, _) and
+    expr = mi.getExpr().getFullyConverted()
+  )
 }
 
 /**
@@ -163,7 +178,7 @@ private predicate ignoreExpr(Expr expr) {
 }
 
 /**
- * Holds if the side effects of `expr` should be ignoredf for the purposes of IR generation.
+ * Holds if the side effects of `expr` should be ignored for the purposes of IR generation.
  *
  * In cases involving `constexpr`, a call can wind up as a constant expression. `ignoreExpr()` will
  * not hold for such a call, since we do need to translate the call (as a constant), but we need to
@@ -193,6 +208,8 @@ private predicate isInvalidFunction(Function func) {
     expr.getEnclosingFunction() = func and
     not exists(expr.getType())
   )
+  or
+  count(func.getEntryPoint().getLocation()) > 1
 }
 
 /**
@@ -286,7 +303,7 @@ private predicate isInConditionalEvaluation(Expr e) {
   isInConditionalEvaluation(getRealParent(e))
 }
 
-private predicate isConditionalTemporaryDestructorCall(DestructorCall dc) {
+predicate isConditionalTemporaryDestructorCall(DestructorCall dc) {
   exists(TemporaryObjectExpr temp |
     temp = dc.getQualifier().(ReuseExpr).getReusedExpr() and
     isInConditionalEvaluation(temp)
@@ -413,14 +430,18 @@ private predicate mustTransformToGLValue(Expr expr) {
 }
 
 /**
- * Holds if `expr` has an lvalue-to-rvalue conversion that should be ignored
- * when generating IR. This occurs for conversion from an lvalue of function type
- * to an rvalue of function pointer type. The conversion is represented in the
- * AST as an lvalue-to-rvalue conversion, but the IR represents both a function
+ * Holds if `expr` has an explicit or implicit load that should be ignored
+ * when generating IR. For example, this occurs for conversion from an lvalue of
+ * function type to an rvalue of function pointer type. The conversion is represented
+ * in the AST as an lvalue-to-rvalue conversion, but the IR represents both a function
  * lvalue and a function pointer prvalue the same.
  */
 predicate ignoreLoad(Expr expr) {
-  expr.hasLValueToRValueConversion() and
+  (
+    expr.hasLValueToRValueConversion()
+    or
+    isPRValueFieldAccessWithImplicitLoad(expr)
+  ) and
   (
     expr instanceof ThisExpr
     or
@@ -431,6 +452,9 @@ predicate ignoreLoad(Expr expr) {
     or
     // The load is duplicated from the right operand.
     isExtractorFrontendVersion65OrHigher() and expr instanceof CommaExpr
+    or
+    // The load is duplicated from the chosen expression.
+    expr instanceof C11GenericExpr
     or
     expr.(PointerDereferenceExpr).getOperand().getFullyConverted().getType().getUnspecifiedType()
       instanceof FunctionPointerType
@@ -497,8 +521,46 @@ predicate hasTranslatedLoad(Expr expr) {
 predicate hasTranslatedSyntheticTemporaryObject(Expr expr) {
   not ignoreExpr(expr) and
   mustTransformToGLValue(expr) and
-  // If it's a load, we'll just ignore the load in `ignoreLoad()`.
-  not expr.hasLValueToRValueConversion()
+  // If it's an explicit or implicit field load, reuse the existing address by
+  // ignoring the load in `ignoreLoad` instead of materializing another
+  // temporary.
+  not expr.hasLValueToRValueConversion() and
+  not isPRValueFieldAccessWithImplicitLoad(expr)
+}
+
+Opcode comparisonOpcode(ComparisonOperation expr) {
+  expr instanceof EQExpr and result instanceof Opcode::CompareEQ
+  or
+  expr instanceof NEExpr and result instanceof Opcode::CompareNE
+  or
+  expr instanceof LTExpr and result instanceof Opcode::CompareLT
+  or
+  expr instanceof GTExpr and result instanceof Opcode::CompareGT
+  or
+  expr instanceof LEExpr and result instanceof Opcode::CompareLE
+  or
+  expr instanceof GEExpr and result instanceof Opcode::CompareGE
+}
+
+private predicate parentExpectsBool(Expr child) {
+  any(NotExpr notExpr).getOperand() = child
+  or
+  usedAsCondition(child)
+}
+
+/**
+ * Holds if `expr` should have a `TranslatedSyntheticBoolToIntConversion` on it.
+ */
+predicate hasTranslatedSyntheticBoolToIntConversion(Expr expr) {
+  not ignoreExpr(expr) and
+  not isIRConstant(expr) and
+  not parentExpectsBool(expr) and
+  expr.getUnspecifiedType() instanceof IntType and
+  (
+    expr instanceof NotExpr
+    or
+    exists(comparisonOpcode(expr))
+  )
 }
 
 class StaticInitializedStaticLocalVariable extends StaticLocalVariable {
@@ -639,6 +701,9 @@ newtype TTranslatedElement =
   // A temporary object that we had to synthesize ourselves, so that we could do a field access or
   // method call on a prvalue.
   TTranslatedSyntheticTemporaryObject(Expr expr) { hasTranslatedSyntheticTemporaryObject(expr) } or
+  TTranslatedSyntheticBoolToIntConversion(Expr expr) {
+    hasTranslatedSyntheticBoolToIntConversion(expr)
+  } or
   // For expressions that would not otherwise generate an instruction.
   TTranslatedResultCopy(Expr expr) {
     not ignoreExpr(expr) and
@@ -709,12 +774,20 @@ newtype TTranslatedElement =
       expr = initList.getFieldExpr(field, position).getFullyConverted()
     )
     or
-    exists(ConstructorFieldInit init |
+    exists(ConstructorDirectFieldInit init |
       not ignoreExpr(init) and
       ast = init and
       field = init.getTarget() and
       expr = init.getExpr().getFullyConverted() and
       position = -1
+    )
+  } or
+  // The initialization of a field via a default member initializer.
+  TTranslatedDefaultFieldInitialization(Expr ast, Field field) {
+    exists(ConstructorDefaultFieldInit init |
+      not ignoreExpr(init) and
+      ast = init and
+      field = init.getTarget()
     )
   } or
   // The value initialization of a field due to an omitted member of an
@@ -761,7 +834,10 @@ newtype TTranslatedElement =
   } or
   // A statement
   TTranslatedStmt(Stmt stmt) { translateStmt(stmt) } or
+  // The `__except` block of a `__try __except` statement
   TTranslatedMicrosoftTryExceptHandler(MicrosoftTryExceptStmt stmt) or
+  // The `__finally` block of a `__try __finally` statement
+  TTranslatedMicrosoftTryFinallyHandler(MicrosoftTryFinallyStmt stmt) or
   // A function
   TTranslatedFunction(Function func) { translateFunction(func) } or
   // A constructor init list
@@ -810,7 +886,7 @@ newtype TTranslatedElement =
   // The declaration/initialization part of a `ConditionDeclExpr`
   TTranslatedConditionDecl(ConditionDeclExpr expr) { not ignoreExpr(expr) } or
   // The side effects of a `Call`
-  TTranslatedCallSideEffects(CallOrAllocationExpr expr) {
+  TTranslatedCallSideEffects(ExprWithCallSideEffects expr) {
     not ignoreExpr(expr) and
     not ignoreSideEffects(expr)
   } or
@@ -849,15 +925,24 @@ newtype TTranslatedElement =
   } or
   // Constructor calls lack a qualifier (`this`) expression, so we need to handle the side effects
   // on `*this` without an `Expr`.
-  TTranslatedStructorQualifierSideEffect(Call call, SideEffectOpcode opcode) {
+  TTranslatedImplicitThisQualifierSideEffect(ExprWithCallSideEffects call, SideEffectOpcode opcode) {
     not ignoreExpr(call) and
     not ignoreSideEffects(call) and
-    call instanceof ConstructorCall and
-    opcode = getASideEffectOpcode(call, -1)
+    (
+      call instanceof ConstructorCall and
+      opcode = getASideEffectOpcode(call, -1)
+      or
+      call instanceof ConstructorFieldInit and
+      opcode = getDefaultFieldInitSideEffectOpcode()
+    )
   } or
   // The side effect that initializes newly-allocated memory.
   TTranslatedAllocationSideEffect(AllocationExpr expr) { not ignoreSideEffects(expr) } or
-  TTranslatedStaticStorageDurationVarInit(Variable var) { Raw::varHasIRFunc(var) }
+  TTranslatedStaticStorageDurationVarInit(Variable var) {
+    Raw::varHasIRFunc(var) and not var instanceof Field
+  } or
+  TTranslatedNonStaticDataMemberVarInit(Field var) { Raw::varHasIRFunc(var) } or
+  TTranslatedAssertionOperand(MacroInvocation mi, int index) { hasAssertionOperand(mi, index) }
 
 /**
  * Gets the index of the first explicitly initialized element in `initList`
@@ -919,9 +1004,6 @@ abstract class TranslatedElement extends TTranslatedElement {
    * Gets the AST node being translated.
    */
   abstract Locatable getAst();
-
-  /** DEPRECATED: Alias for getAst */
-  deprecated Locatable getAST() { result = this.getAst() }
 
   /** Gets the location of this element. */
   Location getLocation() { result = this.getAst().getLocation() }
@@ -1120,7 +1202,7 @@ abstract class TranslatedElement extends TTranslatedElement {
    * If the instruction specified by `tag` is a `FunctionInstruction`, gets the
    * `Function` for that instruction.
    */
-  Function getInstructionFunction(InstructionTag tag) { none() }
+  Declaration getInstructionFunction(InstructionTag tag) { none() }
 
   /**
    * If the instruction specified by `tag` is a `VariableInstruction`, gets the
@@ -1238,5 +1320,7 @@ abstract class TranslatedRootElement extends TranslatedElement {
     this instanceof TTranslatedFunction
     or
     this instanceof TTranslatedStaticStorageDurationVarInit
+    or
+    this instanceof TTranslatedNonStaticDataMemberVarInit
   }
 }

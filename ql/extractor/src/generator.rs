@@ -21,20 +21,30 @@ pub fn run(options: Options) -> std::io::Result<()> {
         Language {
             name: "QL".to_owned(),
             node_types: tree_sitter_ql::NODE_TYPES,
+            desugar: None,
         },
         Language {
             name: "Dbscheme".to_owned(),
             node_types: tree_sitter_ql_dbscheme::NODE_TYPES,
+            desugar: None,
         },
         Language {
             name: "Blame".to_owned(),
             node_types: tree_sitter_blame::NODE_TYPES,
+            desugar: None,
         },
         Language {
             name: "JSON".to_owned(),
             node_types: tree_sitter_json::NODE_TYPES,
+            desugar: None,
         },
     ];
 
-    generate(languages, options.dbscheme, options.library)
+    generate(
+        languages,
+        options.dbscheme,
+        options.library,
+        false, // do not use facade AST
+        "run 'scripts/create-extractor-pack.sh' in ql/",
+    )
 }

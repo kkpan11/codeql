@@ -1,4 +1,6 @@
 /** Provides definitions related to the `javax.xml` package. */
+overlay[local?]
+module;
 
 import java
 private import semmle.code.java.security.XmlParsers
@@ -31,7 +33,7 @@ private class ValidatorConfig extends TransformerConfig {
 
 /** The class `javax.xml.validation.Validator`. */
 private class Validator extends RefType {
-  Validator() { this.hasQualifiedName("javax.xml.validation", "Validator") }
+  Validator() { this.hasQualifiedName(javaxOrJakarta() + ".xml.validation", "Validator") }
 }
 
 /** A safely configured `Validator`. */

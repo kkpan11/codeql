@@ -8,6 +8,8 @@
  * The package name refers to the top-level module the import comes from, and not a PyPI package.
  * So for `from foo.bar import baz`, the package will be `foo`.
  */
+overlay[local?]
+module;
 
 private import python
 private import internal.ApiGraphModels as Shared
@@ -18,22 +20,31 @@ private import semmle.python.dataflow.new.RemoteFlowSources
 private import semmle.python.dataflow.new.DataFlow
 private import semmle.python.ApiGraphs
 private import semmle.python.dataflow.new.FlowSummary
+private import semmle.python.Concepts
 
 /**
- * A remote flow source originating from a CSV source row.
+ * A threat-model flow source originating from a data extension.
  */
-private class RemoteFlowSourceFromCsv extends RemoteFlowSource::Range {
-  RemoteFlowSourceFromCsv() { this = ModelOutput::getASourceNode("remote").asSource() }
+private class ThreatModelSourceFromDataExtension extends ThreatModelSource::Range {
+  ThreatModelSourceFromDataExtension() { ModelOutput::sourceNode(this, _) }
 
-  override string getSourceType() { result = "Remote flow (from model)" }
+  override string getThreatModel() { ModelOutput::sourceNode(this, result) }
+
+  override string getSourceType() {
+    result = "Source node (" + this.getThreatModel() + ") [from data-extension]"
+  }
 }
 
-private class SummarizedCallableFromModel extends SummarizedCallable {
+private class SummarizedCallableFromModel extends SummarizedCallable::Range {
   string type;
   string path;
+  string input_;
+  string output_;
+  string kind;
+  string model_;
 
   SummarizedCallableFromModel() {
-    ModelOutput::relevantSummaryModel(type, path, _, _, _, _) and
+    ModelOutput::relevantSummaryModel(type, path, input_, output_, kind, model_) and
     this = type + ";" + path
   }
 
@@ -47,14 +58,13 @@ private class SummarizedCallableFromModel extends SummarizedCallable {
   }
 
   override predicate propagatesFlow(
-    string input, string output, boolean preservesValue, string model
+    string input, string output, boolean preservesValue, Provenance p, boolean isExact, string model
   ) {
-    exists(string kind | ModelOutput::relevantSummaryModel(type, path, input, output, kind, model) |
-      kind = "value" and
-      preservesValue = true
-      or
-      kind = "taint" and
-      preservesValue = false
-    )
+    input = input_ and
+    output = output_ and
+    (if kind = "value" then preservesValue = true else preservesValue = false) and
+    p = "manual" and
+    isExact = true and
+    model = model_
   }
 }

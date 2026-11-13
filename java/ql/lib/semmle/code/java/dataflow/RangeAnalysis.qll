@@ -8,6 +8,8 @@
  * If an inferred bound relies directly on a condition, then this condition is
  * reported as the reason for the bound.
  */
+overlay[local?]
+module;
 
 /*
  * This library tackles range analysis as a flow problem. Consider e.g.:
@@ -66,7 +68,6 @@
 import java
 private import SSA
 private import RangeUtils
-private import semmle.code.java.controlflow.internal.GuardsLogic
 private import semmle.code.java.security.RandomDataSource
 private import SignAnalysis
 private import semmle.code.java.Reflection
@@ -75,33 +76,17 @@ private import semmle.code.java.Maps
 import Bound
 private import codeql.rangeanalysis.RangeAnalysis
 
-module Sem implements Semantic {
+module Sem implements Semantic<Location> {
   private import java as J
   private import SSA as SSA
   private import RangeUtils as RU
-  private import semmle.code.java.controlflow.internal.GuardsLogic as GL
+  private import semmle.code.java.controlflow.Guards as G
 
   class Expr = J::Expr;
 
   class ConstantIntegerExpr = RU::ConstantIntegerExpr;
 
-  abstract class BinaryExpr extends Expr {
-    Expr getLeftOperand() {
-      result = this.(J::BinaryExpr).getLeftOperand() or result = this.(J::AssignOp).getDest()
-    }
-
-    Expr getRightOperand() {
-      result = this.(J::BinaryExpr).getRightOperand() or result = this.(J::AssignOp).getRhs()
-    }
-
-    final Expr getAnOperand() { result = this.getLeftOperand() or result = this.getRightOperand() }
-
-    final predicate hasOperands(Expr e1, Expr e2) {
-      this.getLeftOperand() = e1 and this.getRightOperand() = e2
-      or
-      this.getLeftOperand() = e2 and this.getRightOperand() = e1
-    }
-  }
+  class BinaryExpr = J::BinaryExpr;
 
   class AddExpr extends BinaryExpr {
     AddExpr() { this instanceof J::AddExpr or this instanceof J::AssignAddExpr }
@@ -172,23 +157,23 @@ module Sem implements Semantic {
   }
 
   class NegateExpr extends UnaryExpr instanceof MinusExpr {
-    override Expr getOperand() { result = super.getExpr() }
+    override Expr getOperand() { result = MinusExpr.super.getOperand() }
   }
 
   class PreIncExpr extends UnaryExpr instanceof J::PreIncExpr {
-    override Expr getOperand() { result = super.getExpr() }
+    override Expr getOperand() { result = J::PreIncExpr.super.getOperand() }
   }
 
   class PreDecExpr extends UnaryExpr instanceof J::PreDecExpr {
-    override Expr getOperand() { result = super.getExpr() }
+    override Expr getOperand() { result = J::PreDecExpr.super.getOperand() }
   }
 
   class PostIncExpr extends UnaryExpr instanceof J::PostIncExpr {
-    override Expr getOperand() { result = super.getExpr() }
+    override Expr getOperand() { result = J::PostIncExpr.super.getOperand() }
   }
 
   class PostDecExpr extends UnaryExpr instanceof J::PostDecExpr {
-    override Expr getOperand() { result = super.getExpr() }
+    override Expr getOperand() { result = J::PostDecExpr.super.getOperand() }
   }
 
   class CopyValueExpr extends UnaryExpr {
@@ -199,7 +184,7 @@ module Sem implements Semantic {
     }
 
     override Expr getOperand() {
-      result = this.(J::PlusExpr).getExpr() or
+      result = this.(J::PlusExpr).getOperand() or
       result = this.(J::AssignExpr).getSource() or
       result = this.(J::LocalVariableDeclExpr).getInit()
     }
@@ -209,22 +194,20 @@ module Sem implements Semantic {
 
   class BasicBlock = J::BasicBlock;
 
-  BasicBlock getABasicBlockSuccessor(BasicBlock bb) { result = bb.getABBSuccessor() }
+  BasicBlock getABasicBlockSuccessor(BasicBlock bb) { result = bb.getASuccessor() }
 
-  private predicate id(BasicBlock x, BasicBlock y) { x = y }
+  private predicate id(ExprParent x, ExprParent y) { x = y }
 
-  private predicate idOf(BasicBlock x, int y) = equivalenceRelation(id/2)(x, y)
+  private predicate idOfAst(ExprParent x, int y) = equivalenceRelation(id/2)(x, y)
+
+  private predicate idOf(BasicBlock x, int y) { idOfAst(x.getFirstNode().getAstNode(), y) }
 
   int getBlockId1(BasicBlock bb) { idOf(bb, result) }
 
-  final private class FinalGuard = GL::Guard;
+  string getBlockId2(BasicBlock bb) { bb.getFirstNode().getIdTag() = result }
 
-  class Guard extends FinalGuard {
+  class Guard extends G::Guards_v2::Guard {
     Expr asExpr() { result = this }
-  }
-
-  predicate implies_v2(Guard g1, boolean b1, Guard g2, boolean b2) {
-    GL::implies_v2(g1, b1, g2, b2)
   }
 
   class Type = J::Type;
@@ -245,17 +228,17 @@ module Sem implements Semantic {
 
   Type getSsaType(SsaVariable var) { result = var.getSourceVariable().getType() }
 
-  final private class FinalSsaVariable = SSA::SsaVariable;
+  final private class FinalSsaVariable = SSA::SsaDefinition;
 
   class SsaVariable extends FinalSsaVariable {
-    Expr getAUse() { result = super.getAUse() }
+    Expr getAUse() { result = super.getARead() }
   }
 
-  class SsaPhiNode extends SsaVariable instanceof SSA::SsaPhiNode {
+  class SsaPhiNode extends SsaVariable instanceof SSA::SsaPhiDefinition {
     predicate hasInputFromBlock(SsaVariable inp, BasicBlock bb) { super.hasInputFromBlock(inp, bb) }
   }
 
-  class SsaExplicitUpdate extends SsaVariable instanceof SSA::SsaExplicitUpdate {
+  class SsaExplicitUpdate extends SsaVariable instanceof SSA::SsaExplicitWrite {
     Expr getDefiningExpr() { result = super.getDefiningExpr() }
   }
 
@@ -264,7 +247,7 @@ module Sem implements Semantic {
   predicate conversionCannotOverflow = safeCast/2;
 }
 
-module SignInp implements SignAnalysisSig<Sem> {
+module SignInp implements SignAnalysisSig<Location, Sem> {
   private import SignAnalysis
   private import internal.rangeanalysis.Sign
 
@@ -281,7 +264,7 @@ module SignInp implements SignAnalysisSig<Sem> {
   predicate semMayBeNegative(Sem::Expr e) { exprSign(e) = TNeg() }
 }
 
-module Modulus implements ModulusAnalysisSig<Sem> {
+module Modulus implements ModulusAnalysisSig<Location, Sem> {
   class ModBound = Bound;
 
   private import codeql.rangeanalysis.ModulusAnalysis as Mod
@@ -307,7 +290,7 @@ module IntDelta implements DeltaSig {
   Delta fromFloat(float f) { result = f }
 }
 
-module JavaLangImpl implements LangSig<Sem, IntDelta> {
+module JavaLangImpl implements LangSig<Location, Sem, IntDelta> {
   /**
    * Holds if `e >= bound` (if `upper = false`) or `e <= bound` (if `upper = true`).
    */
@@ -379,7 +362,7 @@ module Bounds implements BoundSig<Location, Sem, IntDelta> {
   }
 }
 
-module Overflow implements OverflowSig<Sem, IntDelta> {
+module Overflow implements OverflowSig<Location, Sem, IntDelta> {
   predicate semExprDoesNotOverflow(boolean positively, Sem::Expr expr) {
     positively = [true, false] and exists(expr)
   }

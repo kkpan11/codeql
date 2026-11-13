@@ -1,6 +1,8 @@
 /**
  * Provides classes and predicates for working with standard classes and methods from the JDK.
  */
+overlay[local?]
+module;
 
 import Member
 import semmle.code.java.security.ExternalProcess
@@ -43,6 +45,73 @@ class StringContainsMethod extends Method {
   StringContainsMethod() {
     this.hasName("contains") and this.getDeclaringType() instanceof TypeString
   }
+}
+
+/** A call to the `java.lang.String.contains` method. */
+class StringContainsCall extends MethodCall, StringSubstringMatch::Range {
+  StringContainsCall() { this.getMethod() instanceof StringContainsMethod }
+
+  override Expr getInputString() { result = this.getQualifier() }
+
+  override Expr getMatchExpression() { result = this.getArgument(0) }
+
+  override predicate hasSubstringOnBranch(boolean branch) { branch = true }
+
+  override string getName() { result = "String.contains" }
+}
+
+/** A call to the `java.lang.String.matches` method. */
+class StringMatchesCall extends MethodCall, RegexMatch::Range {
+  StringMatchesCall() {
+    exists(Method m | m = this.getMethod() |
+      m.getDeclaringType() instanceof TypeString and
+      m.hasName("matches")
+    )
+  }
+
+  override Expr getRegex() { result = this.getArgument(0) }
+
+  override Expr getString() { result = this.getQualifier() }
+
+  override string getName() { result = "String.matches" }
+}
+
+/** A call to the `java.lang.String.replaceAll` method. */
+class StringReplaceAllCall extends MethodCall, StringReplacement::Range {
+  StringReplaceAllCall() {
+    exists(Method m | m = this.getMethod() |
+      m.getDeclaringType() instanceof TypeString and
+      m.hasName("replaceAll")
+    )
+  }
+
+  override Expr getInputString() { result = this.getQualifier() }
+
+  override Expr getMatchExpression() { result = this.getArgument(0) }
+
+  override Expr getReplacement() { result = this.getArgument(1) }
+
+  override predicate matchExpressionIsRegex() { any() }
+
+  override string getName() { result = "String.replaceAll" }
+}
+
+/** A call to the `java.lang.String.replace` method. */
+class StringReplaceCall extends MethodCall, StringReplacement::Range {
+  StringReplaceCall() {
+    exists(Method m | m = this.getMethod() |
+      m.getDeclaringType() instanceof TypeString and
+      m.hasName("replace")
+    )
+  }
+
+  override Expr getInputString() { result = this.getQualifier() }
+
+  override Expr getMatchExpression() { result = this.getArgument(0) }
+
+  override Expr getReplacement() { result = this.getArgument(1) }
+
+  override string getName() { result = "String.replace" }
 }
 
 /**
@@ -179,6 +248,11 @@ class TypeObjectOutputStream extends RefType {
   TypeObjectOutputStream() { this.hasQualifiedName("java.io", "ObjectOutputStream") }
 }
 
+/** The type `java.io.ObjectInput`. */
+class TypeObjectInput extends RefType {
+  TypeObjectInput() { this.hasQualifiedName("java.io", "ObjectInput") }
+}
+
 /** The type `java.io.ObjectInputStream`. */
 class TypeObjectInputStream extends RefType {
   TypeObjectInputStream() { this.hasQualifiedName("java.io", "ObjectInputStream") }
@@ -210,39 +284,6 @@ class TypeFile extends Class {
 }
 
 // --- Standard methods ---
-/**
- * DEPRECATED: Any constructor of class `java.lang.ProcessBuilder`.
- */
-deprecated class ProcessBuilderConstructor extends Constructor, ExecCallable {
-  ProcessBuilderConstructor() { this.getDeclaringType() instanceof TypeProcessBuilder }
-
-  override int getAnExecutedArgument() { result = 0 }
-}
-
-/**
- * DEPRECATED: Any of the methods named `command` on class `java.lang.ProcessBuilder`.
- */
-deprecated class MethodProcessBuilderCommand extends Method, ExecCallable {
-  MethodProcessBuilderCommand() {
-    this.hasName("command") and
-    this.getDeclaringType() instanceof TypeProcessBuilder
-  }
-
-  override int getAnExecutedArgument() { result = 0 }
-}
-
-/**
- * DEPRECATED: Any method named `exec` on class `java.lang.Runtime`.
- */
-deprecated class MethodRuntimeExec extends Method, ExecCallable {
-  MethodRuntimeExec() {
-    this.hasName("exec") and
-    this.getDeclaringType() instanceof TypeRuntime
-  }
-
-  override int getAnExecutedArgument() { result = 0 }
-}
-
 /**
  * Any method named `getenv` on class `java.lang.System`.
  */
@@ -283,9 +324,6 @@ class MethodCallSystemGetProperty extends MethodCall {
   }
 }
 
-/** DEPRECATED: Alias for `MethodCallSystemGetProperty`. */
-deprecated class MethodAccessSystemGetProperty = MethodCallSystemGetProperty;
-
 /**
  * Any method named `exit` on class `java.lang.Runtime` or `java.lang.System`.
  */
@@ -320,12 +358,7 @@ class WriteObjectMethod extends Method {
 class ReadObjectMethod extends Method {
   ReadObjectMethod() {
     this.getDeclaringType() instanceof TypeObjectInputStream and
-    (
-      this.hasName("readObject") or
-      this.hasName("readObjectOverride") or
-      this.hasName("readUnshared") or
-      this.hasName("resolveObject")
-    )
+    this.hasName(["readObject", "readObjectOverride", "readUnshared", "resolveObject"])
   }
 }
 

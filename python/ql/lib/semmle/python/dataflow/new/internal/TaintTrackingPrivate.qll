@@ -12,11 +12,33 @@ private import semmle.python.ApiGraphs
 predicate defaultTaintSanitizer(DataFlow::Node node) { none() }
 
 /**
+ * Holds if default taint tracking should read content `contentSet` implicitly and
+ * propagate taint from a container to reads of that content.
+ */
+private predicate defaultTaintReadContent(DataFlow::ContentSet contentSet) {
+  // Tuple and dictionary content is precise, so use wildcard content sets to avoid
+  // blowing up the size of `Stage1::readSetEx` (otherwise this predicate would
+  // expand to one row per (node, distinct key or index) and the framework's
+  // read-set relation grows quadratically). `ContentSet.getAReadContent` expands
+  // these wildcards back to the specific contents when matching against stores.
+  contentSet.isAnyTupleOrDictionaryElement()
+  or
+  // List and set element content is already imprecise, so no wildcard expansion is
+  // needed.
+  contentSet.getAStoreContent() instanceof DataFlow::ListElementContent
+  or
+  contentSet.getAStoreContent() instanceof DataFlow::SetElementContent
+}
+
+/**
  * Holds if default `TaintTracking::Configuration`s should allow implicit reads
  * of `c` at sinks and inputs to additional taint steps.
  */
 bindingset[node]
-predicate defaultImplicitTaintRead(DataFlow::Node node, DataFlow::ContentSet c) { none() }
+predicate defaultImplicitTaintRead(DataFlow::Node node, DataFlow::ContentSet c) {
+  exists(node) and
+  defaultTaintReadContent(c)
+}
 
 private module Cached {
   /**
@@ -46,8 +68,6 @@ private module Cached {
       or
       containerStep(nodeFrom, nodeTo)
       or
-      copyStep(nodeFrom, nodeTo)
-      or
       DataFlowPrivate::forReadStep(nodeFrom, _, nodeTo)
       or
       DataFlowPrivate::iterableUnpackingReadStep(nodeFrom, _, nodeTo)
@@ -60,10 +80,7 @@ private module Cached {
     ) and
     model = ""
     or
-    FlowSummaryImpl::Private::Steps::summaryLocalStep(nodeFrom
-          .(DataFlowPrivate::FlowSummaryNode)
-          .getSummaryNode(), nodeTo.(DataFlowPrivate::FlowSummaryNode).getSummaryNode(), false,
-      model)
+    FlowSummaryImpl::Private::Steps::summaryLocalStep(nodeFrom, nodeTo, false, model)
   }
 }
 
@@ -90,8 +107,8 @@ predicate subscriptStep(DataFlow::CfgNode nodeFrom, DataFlow::CfgNode nodeTo) {
 }
 
 /**
- * Holds if taint can flow from `nodeFrom` to `nodeTo` with a step related to string
- * manipulation.
+ * Holds if taint can flow from `nodeFrom` to `nodeTo` by manipulating string-like
+ * data, including text strings, byte strings, and byte arrays.
  *
  * Note that since we cannot easily distinguish when something is a string, this can
  * also make taint flow on `<non string>.replace(foo, bar)`.
@@ -105,6 +122,18 @@ predicate stringManipulation(DataFlow::CfgNode nodeFrom, DataFlow::CfgNode nodeT
       call.getFunction().asCfgNode().(NameNode).getId() in ["str", "bytes", "unicode"]
     ) and
     nodeFrom in [call.getArg(0), call.getArgByName("object")]
+  )
+  or
+  // Bytearray construction and byte extraction.
+  exists(DataFlow::CallCfgNode call | call = nodeTo |
+    call = API::builtin("bytearray").getACall() and
+    nodeFrom in [call.getArg(0), call.getArgByName("source")]
+    or
+    call.(DataFlow::MethodCallNode).calls(nodeFrom, "take_bytes")
+    or
+    // Unbound calls: bytearray.take_bytes(buffer).
+    call = API::builtin("bytearray").getMember("take_bytes").getACall() and
+    nodeFrom = call.getArg(0)
   )
   or
   // String methods. Note that this doesn't recognize `meth = "foo".upper; meth()`
@@ -129,11 +158,6 @@ predicate stringManipulation(DataFlow::CfgNode nodeFrom, DataFlow::CfgNode nodeT
     // TODO: check if these should be handled differently in regards to content
     nodeFrom.getNode() = object and
     method_name in ["partition", "rpartition", "rsplit", "split", "splitlines"]
-    or
-    // Iterable[str] -> str
-    // TODO: check if these should be handled differently in regards to content
-    method_name = "join" and
-    nodeFrom.getNode() = call.getArg(0)
     or
     // Mapping[str, Any] -> str
     method_name = "format_map" and
@@ -163,44 +187,21 @@ predicate stringManipulation(DataFlow::CfgNode nodeFrom, DataFlow::CfgNode nodeT
 }
 
 /**
- * Holds if taint can flow from `nodeFrom` to `nodeTo` with a step related to containers
- * (lists/sets/dictionaries): literals, constructor invocation, methods. Note that this
- * is currently very imprecise, as an example, since we model `dict.get`, we treat any
- * `<tainted object>.get(<arg>)` will be tainted, whether it's true or not.
+ * Holds if taint can flow from `nodeFrom` to `nodeTo` with a step related to reading
+ * content from containers (lists/sets/dictionaries/tuples): subscripts, iteration,
+ * constructor invocation, methods.
  */
 predicate containerStep(DataFlow::Node nodeFrom, DataFlow::Node nodeTo) {
-  // construction by literal
-  //
-  // TODO: once we have proper flow-summary modeling, we might not need this step any
-  // longer -- but there needs to be a matching read-step for the store-step, and we
-  // don't provide that right now.
-  DataFlowPrivate::listStoreStep(nodeFrom, _, nodeTo)
-  or
-  DataFlowPrivate::setStoreStep(nodeFrom, _, nodeTo)
-  or
-  DataFlowPrivate::tupleStoreStep(nodeFrom, _, nodeTo)
-  or
-  DataFlowPrivate::dictStoreStep(nodeFrom, _, nodeTo)
-  or
-  // comprehension, so there is taint-flow from `x` in `[x for x in xs]` to the
-  // resulting list of the list-comprehension.
-  //
-  // TODO: once we have proper flow-summary modeling, we might not need this step any
-  // longer -- but there needs to be a matching read-step for the store-step, and we
-  // don't provide that right now.
-  DataFlowPrivate::comprehensionStoreStep(nodeFrom, _, nodeTo)
-}
-
-/**
- * Holds if taint can flow from `nodeFrom` to `nodeTo` with a step related to copying.
- */
-predicate copyStep(DataFlow::CfgNode nodeFrom, DataFlow::CfgNode nodeTo) {
-  exists(DataFlow::CallCfgNode call | call = nodeTo |
-    call = API::moduleImport("copy").getMember(["copy", "deepcopy"]).getACall() and
-    call.getArg(0) = nodeFrom
+  exists(DataFlow::ContentSet contentSet |
+    DataFlowPrivate::readStep(nodeFrom, contentSet, nodeTo) and
+    exists(DataFlow::Content c | c = contentSet.getAReadContent() |
+      c instanceof DataFlow::TupleElementContent or
+      c instanceof DataFlow::DictionaryElementContent or
+      c instanceof DataFlow::DictionaryElementAnyContent or
+      c instanceof DataFlow::ListElementContent or
+      c instanceof DataFlow::SetElementContent
+    )
   )
-  or
-  nodeTo.(DataFlow::MethodCallNode).calls(nodeFrom, "copy")
 }
 
 /**
@@ -232,4 +233,37 @@ predicate asyncWithStep(DataFlow::Node nodeFrom, DataFlow::Node nodeTo) {
     with.isAsync() and
     contextManager.strictlyDominates(var)
   )
+}
+
+import SpeculativeTaintFlow
+
+private module SpeculativeTaintFlow {
+  private import semmle.python.dataflow.new.internal.DataFlowDispatch as DataFlowDispatch
+  private import semmle.python.dataflow.new.internal.DataFlowPublic as DataFlowPublic
+
+  /**
+   * Holds if the additional step from `src` to `sink` should be considered in
+   * speculative taint flow exploration.
+   */
+  predicate speculativeTaintStep(DataFlow::Node src, DataFlow::Node sink) {
+    exists(DataFlowDispatch::DataFlowCall call, DataFlowDispatch::ArgumentPosition argpos |
+      // TODO: exclude neutrals and anything that has QL modeling.
+      not exists(DataFlowDispatch::DataFlowCall call0 |
+        // Workaround for the fact that python currently associates several
+        // DataFlowCalls with a single call.
+        src.(DataFlowPublic::ArgumentNode).argumentOf(call0, _) and
+        exists(DataFlowDispatch::viableCallable(call0))
+      ) and
+      call instanceof DataFlowDispatch::PotentialLibraryCall and
+      src.(DataFlowPublic::ArgumentNode).argumentOf(call, argpos)
+    |
+      not argpos.isSelf() and
+      sink.(DataFlowPublic::PostUpdateNode)
+          .getPreUpdateNode()
+          .(DataFlowPublic::ArgumentNode)
+          .argumentOf(call, any(DataFlowDispatch::ArgumentPosition qualpos | qualpos.isSelf()))
+      or
+      sink.(DataFlowDispatch::OutNode).getCall(_) = call
+    )
+  }
 }

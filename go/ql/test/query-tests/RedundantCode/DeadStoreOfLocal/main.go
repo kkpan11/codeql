@@ -22,8 +22,13 @@ func main() {
 }
 
 func deadParameter(x int) bool { // we don't want to flag x here
-	x = deadStore() // but we do want to flag this
+	x = deadStore() // $ Alert // but we do want to flag this
 	return true
+}
+
+func usedOnlyAfterFalse() bool {
+	s := deadStore()
+	return false && s == 0
 }
 
 func test2(x int) (int, int) {

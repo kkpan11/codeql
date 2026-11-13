@@ -34,7 +34,7 @@ namespace Semmle.Extraction.CSharp
             private set;
         }
 
-        private static readonly Dictionary<string, string> knownCompilerNames = new Dictionary<string, string>
+        private static readonly Dictionary<string, string> knownCompilerNames = new()
         {
             { "csc.exe", "Microsoft" },
             { "csc2.exe", "Microsoft" },
@@ -67,14 +67,16 @@ namespace Semmle.Extraction.CSharp
                     return;
                 }
 
-                var mscorlibExists = File.Exists(Path.Combine(compilerDir, "mscorlib.dll"));
+                var mscorlibExists = File.Exists(Path.Join(compilerDir, "mscorlib.dll"));
 
                 if (specifiedFramework is null && mscorlibExists)
                 {
                     specifiedFramework = compilerDir;
                 }
 
-                var versionInfo = FileVersionInfo.GetVersionInfo(SpecifiedCompiler);
+                // If csc is specified as compiler name, then attempt to read the version information from csc.dll
+                var compilerBinaryName = Path.GetFileName(SpecifiedCompiler) == "csc" ? $"{SpecifiedCompiler}.dll" : SpecifiedCompiler;
+                var versionInfo = FileVersionInfo.GetVersionInfo(File.Exists(compilerBinaryName) ? compilerBinaryName : SpecifiedCompiler);
                 if (!knownCompilerNames.TryGetValue(versionInfo.OriginalFilename ?? string.Empty, out var vendor))
                 {
                     SkipExtractionBecause("the compiler name is not recognised");
@@ -105,7 +107,7 @@ namespace Semmle.Extraction.CSharp
         /// <summary>
         /// The file csc.rsp.
         /// </summary>
-        private string CscRsp => Path.Combine(FrameworkPath, csc_rsp);
+        private string CscRsp => Path.Join(FrameworkPath, csc_rsp);
 
         /// <summary>
         /// Should we skip extraction?
@@ -132,19 +134,21 @@ namespace Semmle.Extraction.CSharp
         {
             var ret = SuppressDefaultResponseFile(args) || !File.Exists(responseFile) ?
                 args :
-                new[] { "@" + responseFile }.Concat(args);
+                new[] { $"@{responseFile}" }.Concat(args);
 
             // make sure to never treat warnings as errors in the extractor:
             // our version of Roslyn may report warnings that the actual build
             // doesn't
-            return ret.Concat(new[] { "/warnaserror-" });
+            return ret.Concat(["/warnaserror-"]);
         }
 
         private static bool SuppressDefaultResponseFile(IEnumerable<string> args)
         {
-            return args.Any(arg => new[] { "/noconfig", "-noconfig" }.Contains(arg.ToLowerInvariant()));
+            return args.Any(arg => noConfigFlags.Contains(arg.ToLowerInvariant()));
         }
 
         public IEnumerable<string> ArgsWithResponse { get; } = Enumerable.Empty<string>();
+
+        private static readonly string[] noConfigFlags = ["/noconfig", "-noconfig"];
     }
 }

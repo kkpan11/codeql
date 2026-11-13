@@ -26,7 +26,7 @@ import cpp
  */
 class TemplateDependentType extends Type {
   TemplateDependentType() {
-    this instanceof TemplateParameter
+    this instanceof TypeTemplateParameter
     or
     exists(TemplateDependentType t |
       this.refersToDirectly(t) and
@@ -46,6 +46,8 @@ predicate declarationHasSideEffects(Variable v) {
   )
   or
   v.getType() instanceof TemplateDependentType // may have a constructor/destructor
+  or
+  v.getInitializer().getExpr().mayBeImpure()
 }
 
 from LocalVariable v, Function f
@@ -57,5 +59,6 @@ where
   not declarationHasSideEffects(v) and
   not exists(AsmStmt s | f = s.getEnclosingFunction()) and
   not v.getAnAttribute().getName() = "unused" and
-  not any(ErrorExpr e).getEnclosingFunction() = f // unextracted expr may use `v`
+  not v.getAnAttribute().getName() = "maybe_unused" and
+  not f.hasErrors() // Unextracted expressions may use `v`
 select v, "Variable " + v.getName() + " is not used."

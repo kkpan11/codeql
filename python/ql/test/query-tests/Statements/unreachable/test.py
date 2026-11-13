@@ -5,27 +5,27 @@ def f(x):
     while x:
         print (x)
     while 0:
-        asgn = unreachable()
+        asgn = unreachable() # $ Alert
     while False:
-        return unreachable()
+        return unreachable() # $ Alert
     while 7:
         print(x)
 
 def g(x):
     if False:
-        unreachable()
+        unreachable() # $ Alert
     else:
         reachable()
     print(x)
     return 5
-    for x in first_unreachable_stmt():
+    for x in first_unreachable_stmt(): # $ Alert
         raise more_unreachable()
 
 def h(a,b):
     if True:
         reachable()
     else:
-        unreachable()
+        unreachable() # $ Alert
 
 def intish(n):
     """"Regression test - the 'except' statement is reachable"""
@@ -81,7 +81,7 @@ class Odasa3686(object):
 def odasa5387():
     try:
         str
-    except NameError: # Unreachable 'str' is always defined
+    except NameError: # $ Alert # Unreachable 'str' is always defined
         pass
     try:
         unicode
@@ -137,3 +137,33 @@ def unreachable_catch_all_raise(x):
         pass
     else:
         raise ValueError(x)
+
+def ok_match(x):
+    match x:
+        case False:
+            pass
+        case True:
+            pass
+        case _:
+            pass
+
+    match x:
+        case "true":
+            pass
+        case _:
+            pass
+    match x:
+        case 42:
+            pass
+        case _:  # FP
+            pass
+    match x:
+        case None:
+            pass  # FP
+        case _:
+            pass
+    match x:
+        case 0.0:
+            pass  # FP
+        case _:
+            pass

@@ -1,5 +1,6 @@
-import default
+import java
+import utils.test.BasicBlock
 
 from BasicBlock b, BasicBlock b2
-where b.getABBSuccessor() = b2
-select b, b2
+where b.getASuccessor() = b2
+select getFirstAstNodeOrSynth(b), getFirstAstNodeOrSynth(b2)

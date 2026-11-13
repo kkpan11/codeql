@@ -4,7 +4,7 @@
  * @kind path-problem
  * @problem.severity error
  * @security-severity 9.8
- * @precision medium
+ * @precision low
  * @id py/hardcoded-credentials
  * @tags security
  *       external/cwe/cwe-259
@@ -18,6 +18,7 @@ import semmle.python.dataflow.new.TaintTracking
 import semmle.python.filters.Tests
 private import semmle.python.dataflow.new.internal.DataFlowDispatch as DataFlowDispatch
 private import semmle.python.dataflow.new.internal.Builtins::Builtins as Builtins
+private import semmle.python.frameworks.data.ModelsAsData
 
 bindingset[char, fraction]
 predicate fewer_characters_than(StringLiteral str, string char, float fraction) {
@@ -80,6 +81,11 @@ class HardcodedValueSource extends DataFlow::Node {
 
 class CredentialSink extends DataFlow::Node {
   CredentialSink() {
+    exists(string s | s.matches("credentials-%") |
+      // Actual sink-type will be things like `credentials-password` or `credentials-username`
+      ModelOutput::sinkNode(this, s)
+    )
+    or
     exists(string name |
       name.regexpMatch(getACredentialRegex()) and
       not name.matches("%file")
@@ -88,13 +94,22 @@ class CredentialSink extends DataFlow::Node {
         this.(DataFlow::ArgumentNode).argumentOf(_, pos)
       )
       or
-      exists(Keyword k | k.getArg() = name and k.getValue().getAFlowNode() = this.asCfgNode())
+      exists(Keyword k | k.getArg() = name and this.asCfgNode().getNode() = k.getValue())
       or
       exists(CompareNode cmp, NameNode n | n.getId() = name |
         cmp.operands(this.asCfgNode(), any(Eq eq), n)
         or
         cmp.operands(n, any(Eq eq), this.asCfgNode())
       )
+    )
+  }
+}
+
+class CredentialSanitizer extends DataFlow::Node {
+  CredentialSanitizer() {
+    exists(string s | s.matches("credentials-%") |
+      // Whatever the string, this will sanitize flow to all credential sinks.
+      ModelOutput::barrierNode(this, s)
     )
   }
 }
@@ -113,6 +128,10 @@ private module HardcodedCredentialsConfig implements DataFlow::ConfigSig {
   predicate isSource(DataFlow::Node source) { source instanceof HardcodedValueSource }
 
   predicate isSink(DataFlow::Node sink) { sink instanceof CredentialSink }
+
+  predicate isBarrier(DataFlow::Node node) { node instanceof CredentialSanitizer }
+
+  predicate observeDiffInformedIncrementalMode() { any() }
 }
 
 module HardcodedCredentialsFlow = TaintTracking::Global<HardcodedCredentialsConfig>;

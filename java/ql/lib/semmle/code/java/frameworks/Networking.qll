@@ -1,8 +1,12 @@
 /**
  * Definitions related to `java.net.*`.
  */
+overlay[local?]
+module;
 
 import semmle.code.java.Type
+private import semmle.code.java.dataflow.DataFlow
+private import semmle.code.java.dataflow.FlowSteps
 
 /** The type `java.net.URLConnection`. */
 class TypeUrlConnection extends RefType {
@@ -16,12 +20,17 @@ class TypeSocket extends RefType {
 
 /** The type `javax.net.SocketFactory` */
 class TypeSocketFactory extends RefType {
-  TypeSocketFactory() { this.hasQualifiedName("javax.net", "SocketFactory") }
+  TypeSocketFactory() { this.hasQualifiedName(javaxOrJakarta() + ".net", "SocketFactory") }
 }
 
 /** The type `java.net.URL`. */
 class TypeUrl extends RefType {
   TypeUrl() { this.hasQualifiedName("java.net", "URL") }
+}
+
+/** Specifies that if a `URL` is tainted, then so are its synthetic fields. */
+private class UrlFieldsInheritTaint extends DataFlow::SyntheticFieldContent, TaintInheritingContent {
+  UrlFieldsInheritTaint() { this.getField().matches("java.net.URL.%") }
 }
 
 /** The type `java.net.URLDecoder`. */

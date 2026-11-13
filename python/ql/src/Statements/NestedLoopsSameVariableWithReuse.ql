@@ -3,7 +3,8 @@
  * @description Redefining a variable in an inner loop and then using
  *              the variable in an outer loop causes unexpected behavior.
  * @kind problem
- * @tags maintainability
+ * @tags quality
+ *       reliability
  *       correctness
  * @problem.severity error
  * @sub-severity low
@@ -14,7 +15,7 @@
 import python
 
 predicate loop_variable_ssa(For f, Variable v, SsaVariable s) {
-  f.getTarget().getAFlowNode() = s.getDefinition() and v = s.getVariable()
+  s.getDefinition().getNode() = f.getTarget() and v = s.getVariable()
 }
 
 predicate variableUsedInNestedLoops(For inner, For outer, Variable v, Name n) {

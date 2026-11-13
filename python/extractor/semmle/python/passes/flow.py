@@ -12,7 +12,7 @@ from semmle.python.passes import splitter
 from semmle.python.passes import unroller
 from semmle.python import modules
 import semmle.graph as graph
-from semmle.logging import Logger
+from semmle.logging import Logger, format_message
 
 __all__ = [ 'FlowPass' ]
 
@@ -909,14 +909,22 @@ class FlowPass(Pass):
     def _walk_break(self, node, predecessors):
         #A break statement counts as an exit to the enclosing loop statement
         predecessors = self.add_successor(predecessors, node)
-        self.scope.breaking_stack.add(predecessors)
+        # In well formed code, there should always be an element in the breaking stack, but because
+        # our parser accepts code where `break` appears outside of a loop, we must check for this
+        # case.
+        if self.scope.breaking_stack:
+            self.scope.breaking_stack.add(predecessors)
         #Provide no predecessors to following statement
         return EMPTY
 
     def _walk_continue(self, node, predecessors):
         #A continue statement counts as an exit to the following orelse
         predecessors = self.add_successor(predecessors, node)
-        self.scope.continuing_stack.add(predecessors)
+        # In well formed code, there should always be an element in the continuing stack, but
+        # because our parser accepts code where `continue` appears outside of a loop, we must check
+        # for this case.
+        if self.scope.continuing_stack:
+            self.scope.continuing_stack.add(predecessors)
         #Provide no predecessors to following statement
         return EMPTY
 
@@ -1908,7 +1916,8 @@ def main():
         import semmle.python.parser.tsg_parser
         parsed_ast = semmle.python.parser.tsg_parser.parse(inputfile, FakeLogger())
     else:
-        module = modules.PythonSourceModule("__main__", inputfile, FakeLogger())
+        from semmle.worker import DiagnosticsWriter
+        module = modules.PythonSourceModule("__main__", inputfile, FakeLogger(), DiagnosticsWriter(0))
         parsed_ast = module.ast
     FlowPass(options.split, options.prune, options.unroll).extract(parsed_ast, writer)
     writer.close()
@@ -1916,7 +1925,7 @@ def main():
 class FakeLogger(object):
 
     def debug(self, fmt, *args):
-        print(fmt % args)
+        print(format_message(fmt, args))
 
     def traceback(self):
         print(traceback.format_exc())

@@ -1,6 +1,8 @@
 /**
  * Provides classes modeling security-relevant aspects of the `log` package.
  */
+overlay[local?]
+module;
 
 import go
 
@@ -11,7 +13,9 @@ module Log {
 
     LogFunction() {
       exists(string fn |
-        fn.matches(["Fatal%", "Panic%", "Print%"]) and firstPrintedArg = 0
+        fn =
+          ["Fatal", "Fatalf", "Fatalln", "Panic", "Panicf", "Panicln", "Print", "Printf", "Println"] and
+        firstPrintedArg = 0
         or
         fn = "Output" and firstPrintedArg = 1
       |
@@ -25,28 +29,35 @@ module Log {
   }
 
   private class LogFormatter extends StringOps::Formatting::Range instanceof LogFunction {
-    LogFormatter() { this.getName().matches("%f") }
+    LogFormatter() { this.getName() = ["Fatalf", "Panicf", "Printf", "Panic", "Panicf", "Panicln"] }
 
     override int getFormatStringIndex() { result = 0 }
-  }
-
-  private class LogCall extends LoggerCall::Range, DataFlow::CallNode {
-    LogFunction target;
-
-    LogCall() { this = target.getACall() }
-
-    override DataFlow::Node getAMessageComponent() {
-      result = this.getSyntacticArgument(any(int i | i >= target.getFirstPrintedArg()))
-    }
   }
 
   /** A fatal log function, which calls `os.Exit`. */
   private class FatalLogFunction extends Function {
     FatalLogFunction() {
-      exists(string fn | fn.matches("Fatal%") | this.hasQualifiedName("log", fn))
+      exists(string fn | fn = ["Fatal", "Fatalf", "Fatalln"] |
+        this.hasQualifiedName("log", fn)
+        or
+        this.(Method).hasQualifiedName("log", "Logger", fn)
+      )
     }
 
-    override predicate mayReturnNormally() { none() }
+    override predicate mustNotReturnNormally() { any() }
+  }
+
+  /** A log function which must panic. */
+  private class PanicLogFunction extends Function {
+    PanicLogFunction() {
+      exists(string fn | fn = ["Panic", "Panicf", "Panicln"] |
+        this.hasQualifiedName("log", fn)
+        or
+        this.(Method).hasQualifiedName("log", "Logger", fn)
+      )
+    }
+
+    override predicate mustPanic() { any() }
   }
 
   // These models are not implemented using Models-as-Data because they represent reverse flow.
@@ -71,30 +82,6 @@ module Log {
     FunctionOutput outp;
 
     MethodModels() {
-      // signature: func (*Logger) Fatal(v ...interface{})
-      this.hasQualifiedName("log", "Logger", "Fatal") and
-      (inp.isParameter(_) and outp.isReceiver())
-      or
-      // signature: func (*Logger) Fatalf(format string, v ...interface{})
-      this.hasQualifiedName("log", "Logger", "Fatalf") and
-      (inp.isParameter(_) and outp.isReceiver())
-      or
-      // signature: func (*Logger) Fatalln(v ...interface{})
-      this.hasQualifiedName("log", "Logger", "Fatalln") and
-      (inp.isParameter(_) and outp.isReceiver())
-      or
-      // signature: func (*Logger) Panic(v ...interface{})
-      this.hasQualifiedName("log", "Logger", "Panic") and
-      (inp.isParameter(_) and outp.isReceiver())
-      or
-      // signature: func (*Logger) Panicf(format string, v ...interface{})
-      this.hasQualifiedName("log", "Logger", "Panicf") and
-      (inp.isParameter(_) and outp.isReceiver())
-      or
-      // signature: func (*Logger) Panicln(v ...interface{})
-      this.hasQualifiedName("log", "Logger", "Panicln") and
-      (inp.isParameter(_) and outp.isReceiver())
-      or
       // signature: func (*Logger) Print(v ...interface{})
       this.hasQualifiedName("log", "Logger", "Print") and
       (inp.isParameter(_) and outp.isReceiver())

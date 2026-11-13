@@ -1,3 +1,349 @@
+## 6.8.7
+
+No user-facing changes.
+
+## 6.8.6
+
+No user-facing changes.
+
+## 6.8.5
+
+No user-facing changes.
+
+## 6.8.4
+
+No user-facing changes.
+
+## 6.8.3
+
+No user-facing changes.
+
+## 6.8.2
+
+No user-facing changes.
+
+## 6.8.1
+
+No user-facing changes.
+
+## 6.8.0
+
+### Major Analysis Improvements
+
+* Upgraded to allow analysis of Swift 6.3.3.
+
+## 6.7.2
+
+No user-facing changes.
+
+## 6.7.1
+
+No user-facing changes.
+
+## 6.7.0
+
+### Major Analysis Improvements
+
+* Upgraded to allow analysis of Swift 6.3.2.
+
+### Minor Analysis Improvements
+
+* The sensitive data heuristics used to identify code that handles passwords and private data have been improved. Most of the changes permit more variations of established patterns, thereby finding more sensitive data. Queries that use the sensitive data library (for example `swift/cleartext-logging`) may find more correct results and fewer false positive results after these changes.
+
+## 6.6.0
+
+### New Features
+
+* The `TypeDecl` class now defines a `getDeclaredInterfaceType` predicate, which yields the declared interface type of the type declaration.
+
+## 6.5.0
+
+### New Features
+
+* The `BuiltinFixedArrayType` class now defines the predicates `getSize` and `getElementType`, which yield the size of the array and the type of elements stored in the array, respectively.
+
+### Major Analysis Improvements
+
+* Upgraded to allow analysis of Swift 6.3.1.
+
+## 6.4.0
+
+### Major Analysis Improvements
+
+* Upgraded to allow analysis of Swift 6.3.
+
+## 6.3.3
+
+No user-facing changes.
+
+## 6.3.2
+
+No user-facing changes.
+
+## 6.3.1
+
+No user-facing changes.
+
+## 6.3.0
+
+### Major Analysis Improvements
+
+* Upgraded to allow analysis of Swift 6.2.4.
+
+### Minor Analysis Improvements
+
+* Inline expectations test comments, which are of the form `// $ tag` or `// $ tag=value`, are now parsed more strictly and will not be recognized if there isn't a space after the `$` symbol.
+
+## 6.2.3
+
+No user-facing changes.
+
+## 6.2.2
+
+No user-facing changes.
+
+## 6.2.1
+
+### Minor Analysis Improvements
+
+* The predicate `SummarizedCallable.propagatesFlow` has been extended with the columns `Provenance p` and `boolean isExact`, and as a consequence the predicates `SummarizedCallable.hasProvenance` and `SummarizedCallable.hasExactModel` have been removed.
+
+## 6.2.0
+
+### Major Analysis Improvements
+
+* Upgraded to allow analysis of Swift 6.2.3.
+* Upgraded to allow analysis of Swift 6.2.2.
+
+## 6.1.4
+
+No user-facing changes.
+
+## 6.1.3
+
+No user-facing changes.
+
+## 6.1.2
+
+No user-facing changes.
+
+## 6.1.1
+
+No user-facing changes.
+
+## 6.1.0
+
+### Major Analysis Improvements
+
+* Upgraded to allow analysis of Swift 6.2.1.
+
+## 6.0.0
+
+### Breaking Changes
+
+* The `OpenedArchetypeType` class has been renamed as `ExistentialArchetypeType`.
+* The `OtherAvailabilitySpec` class has been removed. Use `AvailabilitySpec::isWildcard` instead.
+* The `PlatformVersionAvailabilitySpec` has been removed. Use `AvailabilitySpec::getPlatform` and `AvailabilitySpec::getVersion` instead.
+
+### New Features
+
+* Added AST nodes `UsingDecl`, `UnsafeExpr`, and `InlineArrayType` that correspond to new nodes in Swift 6.2.
+* Added new predicates `isDistributedGet`, `isRead2`, `isModify2`, and `isInit` to the `Accessor` class that correspond to new accessors in Swift 6.2.
+* Added a new predicate `isApply` to the `KeyPathComponent` class that corresponds to method and initializer key path components in Swift 6.2.
+
+### Major Analysis Improvements
+
+* Upgraded to allow analysis of Swift 6.2.
+* Support for experimental Embedded Swift has been dropped.
+
+## 5.0.9
+
+No user-facing changes.
+
+## 5.0.8
+
+No user-facing changes.
+
+## 5.0.7
+
+### Minor Analysis Improvements
+
+* Updated to allow analysis of Swift 6.1.3.
+
+## 5.0.6
+
+No user-facing changes.
+
+## 5.0.5
+
+No user-facing changes.
+
+## 5.0.4
+
+### Minor Analysis Improvements
+
+* The regular expressions in `SensitiveDataHeuristics.qll` have been extended to find more instances of sensitive data such as secrets used in authentication, finance and health information, and device data. The heuristics have also been refined to find fewer false positive matches. This will improve results for queries related to sensitive information.
+
+## 5.0.3
+
+No user-facing changes.
+
+## 5.0.2
+
+No user-facing changes.
+
+## 5.0.1
+
+### Minor Analysis Improvements
+
+* Updated to allow analysis of Swift 6.1.2.
+
+## 5.0.0
+
+### Breaking Changes
+
+* Deleted the deprecated `parseContent` predicate from the `ExternalFlow.qll`.
+* Deleted the deprecated `hasLocationInfo` predicate from the `DataFlowPublic.qll`.
+* Deleted the deprecated `SummaryComponent` class from the `FlowSummary.qll`.
+* Deleted the deprecated `SummaryComponentStack` class from the `FlowSummary.qll`.
+* Deleted the deprecated `SummaryComponent` module from the `FlowSummary.qll`.
+* Deleted the deprecated `SummaryComponentStack` module from the `FlowSummary.qll`.
+* Deleted the deprecated `RequiredSummaryComponentStack` class from the `FlowSummary.qll`.
+
+### Minor Analysis Improvements
+
+* Updated to allow analysis of Swift 6.1.1.
+* `TypeValueExpr` experimental AST leaf is now implemented in the control flow library
+
+## 4.3.0
+
+### New Features
+
+* Added AST nodes `UnsafeCastExpr`, `TypeValueExpr`, `IntegerType`, and `BuiltinFixedArrayType` that correspond to new nodes added by Swift 6.1.
+
+## 4.2.0
+
+### Major Analysis Improvements
+
+* Upgraded to allow analysis of Swift 6.1.
+
+### Minor Analysis Improvements
+
+* Added AST nodes `ActorIsolationErasureExpr`, `CurrentContextIsolationExpr`,
+  `ExtractFunctionIsolationExpr` and `UnreachableExpr` that correspond to new nodes
+  added by Swift 6.0.
+
+## 4.1.4
+
+No user-facing changes.
+
+## 4.1.3
+
+No user-facing changes.
+
+## 4.1.2
+
+No user-facing changes.
+
+## 4.1.1
+
+No user-facing changes.
+
+## 4.1.0
+
+### Deprecated APIs
+
+* The predicates `immediatelyControls` and `controls` on the `ConditionBlock`
+  class have been deprecated in favor of the newly added `dominatingEdge`
+  predicate.
+
+## 4.0.0
+
+### Breaking Changes
+
+* Deleted the deprecated `ArrayContent` class from the dataflow library, use `CollectionContent` instead.
+* Deleted the deprecated `getOptionsInput`, `getRegexInput`, and `getStringInput` predicates from the regexp library, use `getAnOptionsInput`, `getRegexInputNode`, and `getStringInputNode` instead.
+
+## 3.1.1
+
+### Minor Analysis Improvements
+
+* The sensitive data library has been improved so that `snake_case` style variable names are recognized more reliably. This may result in more sensitive data being identified, and more results from queries that use the sensitive data library.
+
+## 3.1.0
+
+### Major Analysis Improvements
+
+* Upgraded to allow analysis of Swift 6.0.2.
+
+## 3.0.0
+
+### Breaking Changes
+
+* Deleted the old deprecated data flow API that was based on extending a configuration class. See https://github.blog/changelog/2023-08-14-new-dataflow-api-for-writing-custom-codeql-queries for instructions on migrating your queries to use the new API.
+
+## 2.0.4
+
+No user-facing changes.
+
+## 2.0.3
+
+No user-facing changes.
+
+## 2.0.2
+
+No user-facing changes.
+
+## 2.0.1
+
+### Minor Analysis Improvements
+
+* All AST classes in `codeql.swift.elements` are now `final`, which means that it is no longer possible to `override` predicates defined in those classes (it is, however, still possible to `extend` the classes).
+
+## 2.0.0
+
+### Breaking Changes
+
+* Deleted the deprecated `explorationLimit` predicate from `DataFlow::Configuration`, use `FlowExploration<explorationLimit>` instead.
+* Deleted the deprecated `getDerivedTypeDecl` predicate from the `TypeDecl` class, use `getADerivedTypeDecl` or `getABaseTypeDecl` instead.
+
+## 1.1.3
+
+No user-facing changes.
+
+## 1.1.2
+
+No user-facing changes.
+
+## 1.1.1
+
+### Minor Analysis Improvements
+
+* The model for `FileManager` no longer considers methods that return paths on the file system as taint sources. This is because these sources have been found to produce results of low value.
+* An error in the model for `URL.withUnsafeFileSystemRepresentation(_:)` has been corrected. This may result in new data flow paths being found during analysis.
+
+## 1.1.0
+
+### New Features
+
+* Swift support is now out of beta, and generally available.
+
+### Minor Analysis Improvements
+
+* Additional heuristics for sensitive private information have been added to the `SensitiveExprs.qll` library, improving coverage for credit card and social security numbers. This may result in additional results for queries that use sensitive data such as `swift/cleartext-transmission`.
+
+## 1.0.3
+
+No user-facing changes.
+
+## 1.0.2
+
+No user-facing changes.
+
+## 1.0.1
+
+No user-facing changes.
+
 ## 1.0.0
 
 ### Breaking Changes

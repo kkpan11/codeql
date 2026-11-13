@@ -1,5 +1,6 @@
 // CodeQL database schema for QL
 // Automatically generated from the tree-sitter grammar; do not edit
+// To regenerate, run 'scripts/create-extractor-pack.sh' in ql/
 
 /*- Files and folders -*/
 
@@ -100,13 +101,39 @@ yaml_scalars (unique int scalar: @yaml_scalar_node ref,
               int style: int ref,
               string value: string ref);
 
+yaml_comments (unique int id: @yaml_comment,
+               string text: string ref,
+               string tostring: string ref);
+
 yaml_errors (unique int id: @yaml_error,
              string message: string ref);
 
 yaml_locations(unique int locatable: @yaml_locatable ref,
              int location: @location_default ref);
 
-@yaml_locatable = @yaml_node | @yaml_error;
+@yaml_locatable = @yaml_node | @yaml_error | @yaml_comment;
+
+/*- Database metadata -*/
+
+/**
+ * The CLI will automatically emit applicable tuples for this table,
+ * such as `databaseMetadata("isOverlay", "true")` when building an
+ * overlay database.
+ */
+databaseMetadata(
+  string metadataKey: string ref,
+  string value: string ref
+);
+
+/*- Overlay support -*/
+
+/**
+ * The CLI will automatically emit tuples for each new/modified/deleted file
+ * when building an overlay database.
+ */
+overlayChangedFiles(
+  string path: string ref
+);
 
 /*- QL dbscheme -*/
 @ql_add_expr_left_type = @ql_add_expr | @ql_aggregate | @ql_call_or_unqual_agg_expr | @ql_comp_term | @ql_conjunction | @ql_disjunction | @ql_expr_annotation | @ql_if_term | @ql_implication | @ql_in_expr | @ql_instance_of | @ql_literal | @ql_mul_expr | @ql_negation | @ql_par_expr | @ql_prefix_cast | @ql_qualified_expr | @ql_quantified | @ql_range | @ql_set_literal | @ql_special_call | @ql_super_ref | @ql_unary_expr | @ql_variable
@@ -528,6 +555,11 @@ ql_module_implements(
   unique int implements: @ql_signature_expr ref
 );
 
+ql_module_name(
+  unique int ql_module: @ql_module ref,
+  unique int name: @ql_module_name ref
+);
+
 #keyset[ql_module, index]
 ql_module_parameter(
   int ql_module: @ql_module ref,
@@ -545,8 +577,7 @@ ql_module_child(
 );
 
 ql_module_def(
-  unique int id: @ql_module,
-  int name: @ql_module_name ref
+  unique int id: @ql_module
 );
 
 ql_module_alias_body_def(

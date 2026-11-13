@@ -1,7 +1,7 @@
 """
     Custom Pygments lexer for highlighting QL code.
     
-    Based on instructions from http://pygments.org/docs/lexerdevelopment/.
+    Based on instructions from https://pygments.org/docs/lexerdevelopment/.
 """
 
 import re
@@ -35,7 +35,7 @@ class QLLexer(RegexLexer):
             # Keywords
             (r'\b(boolean|date|float|int|string)\b', Keyword.Type),
             (r'\b(abstract|cached|deprecated|external|final|library|override|private|query'
-             r'|(pragma|language|bindingset)\[\w*(,\s*\w*)*\])\s', 
+             r'|(pragma|language|bindingset|overlay)\[\w*\??(,\s*\w*\??)*\])\s', 
              Keyword.Reserved),
             (words((
                 'and', 'any', 'as', 'asc', 'avg', 'by', 'class','concat', 'count',

@@ -1,41 +1,57 @@
 private import cpp as Cpp
 private import DataFlowUtil
+private import DataFlowNodes
 private import semmle.code.cpp.ir.IR
 private import DataFlowDispatch
 private import semmle.code.cpp.ir.internal.IRCppLanguage
 private import semmle.code.cpp.dataflow.internal.FlowSummaryImpl as FlowSummaryImpl
-private import SsaInternals as Ssa
+private import SsaImpl as Ssa
 private import DataFlowImplCommon as DataFlowImplCommon
 private import codeql.util.Unit
 private import Node0ToString
 private import ModelUtil
 private import semmle.code.cpp.models.interfaces.FunctionInputsAndOutputs as IO
 private import semmle.code.cpp.models.interfaces.DataFlow as DF
+private import semmle.code.cpp.dataflow.ExternalFlow as External
 
 cached
 private module Cached {
   cached
-  module Nodes0 {
-    cached
-    newtype TIRDataFlowNode0 =
-      TInstructionNode0(Instruction i) {
-        not Ssa::ignoreInstruction(i) and
-        not exists(Operand op |
-          not Ssa::ignoreOperand(op) and i = Ssa::getIRRepresentationOfOperand(op)
-        ) and
-        // We exclude `void`-typed instructions because they cannot contain data.
-        // However, if the instruction is a glvalue, and their type is `void`, then the result
-        // type of the instruction is really `void*`, and thus we still want to have a dataflow
-        // node for it.
-        (not i.getResultType() instanceof VoidType or i.isGLValue())
-      } or
-      TMultipleUseOperandNode0(Operand op) {
-        not Ssa::ignoreOperand(op) and not exists(Ssa::getIRRepresentationOfOperand(op))
-      } or
-      TSingleUseOperandNode0(Operand op) {
-        not Ssa::ignoreOperand(op) and exists(Ssa::getIRRepresentationOfOperand(op))
-      }
+  newtype TIRDataFlowNode0 =
+    TInstructionNode0(Instruction i) {
+      not Ssa::ignoreInstruction(i) and
+      not exists(Operand op |
+        not Ssa::ignoreOperand(op) and i = Ssa::getIRRepresentationOfOperand(op)
+      ) and
+      // We exclude `void`-typed instructions because they cannot contain data.
+      // However, if the instruction is a glvalue, and their type is `void`, then the result
+      // type of the instruction is really `void*`, and thus we still want to have a dataflow
+      // node for it.
+      (not i.getResultType() instanceof VoidType or i.isGLValue())
+    } or
+    TMultipleUseOperandNode0(Operand op) {
+      not Ssa::ignoreOperand(op) and not exists(Ssa::getIRRepresentationOfOperand(op))
+    } or
+    TSingleUseOperandNode0(Operand op) {
+      not Ssa::ignoreOperand(op) and exists(Ssa::getIRRepresentationOfOperand(op))
+    }
+
+  cached
+  string toStringCached(Node n) {
+    result = toExprString(n)
+    or
+    not exists(toExprString(n)) and
+    result = n.toStringImpl()
   }
+
+  cached
+  Location getLocationCached(Node n) { result = n.getLocationImpl() }
+
+  cached
+  newtype TContentApprox =
+    TFieldApproxContent(string s) { fieldHasApproxName(_, s) } or
+    TUnionApproxContent(string s) { unionHasApproxName(_, s) } or
+    TElementApproxContent()
 
   /**
    * Gets an additional term that is added to the `join` and `branch` computations to reflect
@@ -58,38 +74,204 @@ private module Cached {
       result = countNumberOfBranchesUsingParameter(switch, p)
     )
   }
-}
 
-import Cached
-private import Nodes0
+  cached
+  newtype TDataFlowCallable =
+    TSourceCallable(Cpp::Declaration decl) or
+    TSummarizedCallable(FlowSummaryImpl::Public::SummarizedCallable c)
 
-/**
- * A module for calculating the number of stars (i.e., `*`s) needed for various
- * dataflow node `toString` predicates.
- */
-module NodeStars {
-  private int getNumberOfIndirections(Node n) {
-    result = n.(RawIndirectOperand).getIndirectionIndex()
+  cached
+  newtype TDataFlowCall =
+    TNormalCall(CallInstruction call) or
+    TSummaryCall(
+      FlowSummaryImpl::Public::SummarizedCallable c, FlowSummaryImpl::Private::SummaryNode receiver
+    ) {
+      FlowSummaryImpl::Private::summaryCallbackRange(c, receiver)
+    }
+
+  /**
+   * Holds if data can flow from `node1` to `node2` in a way that loses the
+   * calling context. For example, this would happen with flow through a
+   * global or static variable.
+   */
+  cached
+  predicate jumpStep(Node n1, Node n2) {
+    exists(GlobalLikeVariable v |
+      exists(Ssa::GlobalUse globalUse |
+        v = globalUse.getVariable() and
+        n1.(FinalGlobalValue).getGlobalUse() = globalUse
+      |
+        globalUse.getIndirection() = getMinIndirectionForGlobalUse(globalUse) and
+        v = n2.asVariable()
+        or
+        v = n2.asIndirectVariable(globalUse.getIndirection())
+      )
+      or
+      exists(Ssa::GlobalDef globalDef |
+        v = globalDef.getVariable() and
+        n2.(InitialGlobalValue).getGlobalDef() = globalDef
+      |
+        globalDef.getIndirection() = getMinIndirectionForGlobalDef(globalDef) and
+        v = n1.asVariable()
+        or
+        v = n1.asIndirectVariable(globalDef.getIndirection())
+      )
+    )
     or
-    result = n.(RawIndirectInstruction).getIndirectionIndex()
-    or
-    result = n.(VariableNode).getIndirectionIndex()
-    or
-    result = n.(PostUpdateNodeImpl).getIndirectionIndex()
-    or
-    result = n.(FinalParameterNode).getIndirectionIndex()
-    or
-    result = n.(BodyLessParameterNodeImpl).getIndirectionIndex()
+    // models-as-data summarized flow
+    FlowSummaryImpl::Private::Steps::summaryJumpStep(n1, n2)
+  }
+
+  bindingset[store]
+  pragma[inline_late]
+  private predicate nodeHasInstructionLate(Node node, StoreInstruction store, int indirectionIndex) {
+    nodeHasInstruction(node, store, indirectionIndex)
+  }
+
+  pragma[nomagic]
+  private predicate storeStepSource(
+    Operand fieldAddress, int contentIndirectionIndex, Node node, boolean certain
+  ) {
+    exists(int indirectionIndex, int numberOfLoads, StoreInstruction store |
+      nodeHasInstructionLate(node, store, indirectionIndex) and
+      numberOfLoadsFromOperand(fieldAddress, store.getDestinationAddressOperand(), numberOfLoads,
+        certain) and
+      contentIndirectionIndex = 1 + indirectionIndex + numberOfLoads
+    )
+  }
+
+  pragma[nomagic]
+  private predicate hasFieldAddressAndField(Field f, PostFieldUpdateNode pfu, Operand fieldAddress) {
+    pfu.getIndirectionIndex() = 1 and
+    pfu.getUpdatedField() = f and
+    pfu.getFieldAddress() = fieldAddress
+  }
+
+  pragma[nomagic]
+  private predicate hasFieldAndIndirectionIndex(Field f, int indirectionIndex, FieldContent fc) {
+    fc.getAField() = f and
+    fc.getIndirectionIndex() = indirectionIndex
+  }
+
+  pragma[nomagic]
+  private predicate storeStepTarget(
+    Operand address, int indirectionIndex, PostFieldUpdateNode pfu, FieldContent fc
+  ) {
+    exists(Field f |
+      hasFieldAddressAndField(f, pfu, address) and
+      hasFieldAndIndirectionIndex(f, indirectionIndex, fc)
+    )
   }
 
   /**
-   * Gets the number of stars (i.e., `*`s) needed to produce the `toString`
-   * output for `n`.
+   * Holds if data can flow from `node1` to `node2` via an assignment to `f`.
+   * Thus, `node2` references an object with a field `f` that contains the
+   * value of `node1`.
+   *
+   * The boolean `certain` is true if the destination address does not involve
+   * any pointer arithmetic, and false otherwise.
    */
-  string stars(Node n) { result = repeatStars(getNumberOfIndirections(n)) }
+  cached
+  predicate storeStepImpl(Node node1, Content c, Node node2, boolean certain) {
+    exists(Operand fieldAddress, int indirectionIndex |
+      storeStepSource(fieldAddress, indirectionIndex, node1, certain) and
+      storeStepTarget(fieldAddress, indirectionIndex, node2, c)
+    )
+    or
+    // models-as-data summarized flow
+    FlowSummaryImpl::Private::Steps::summaryStoreStep(node1.(FlowSummaryNode).getSummaryNode(), c,
+      node2.(FlowSummaryNode).getSummaryNode()) and
+    certain = true
+  }
+
+  /**
+   * Holds if data can flow from `node1` to `node2` via an assignment to `f`.
+   * Thus, `node2` references an object with a field `f` that contains the
+   * value of `node1`.
+   */
+  cached
+  predicate storeStep(Node node1, ContentSet c, Node node2) { storeStepImpl(node1, c, node2, _) }
+
+  /**
+   * Holds if data can flow from `node1` to `node2` via a read of `f`.
+   * Thus, `node1` references an object with a field `f` whose value ends up in
+   * `node2`.
+   */
+  cached
+  predicate readStep(Node node1, ContentSet c, Node node2) {
+    exists(
+      FieldAddress fa1, Operand operand, int numberOfLoads, int indirectionIndex2, FieldContent fc
+    |
+      fc = c and
+      nodeHasOperand(node2, operand, indirectionIndex2) and
+      // The `1` here matches the `node2.getIndirectionIndex() = 1` conjunct
+      // in `storeStep`.
+      nodeHasOperand(node1, fa1.getObjectAddressOperand(), 1) and
+      numberOfLoadsFromOperand(fa1, operand, numberOfLoads, _) and
+      fc.getAField() = fa1.getField() and
+      getIndirectionIndexLate(fc) = indirectionIndex2 + numberOfLoads
+    )
+    or
+    // models-as-data summarized flow
+    FlowSummaryImpl::Private::Steps::summaryReadStep(node1.(FlowSummaryNode).getSummaryNode(), c,
+      node2.(FlowSummaryNode).getSummaryNode())
+  }
+
+  /**
+   * Holds if values stored inside content `c` are cleared at node `n`.
+   */
+  cached
+  predicate clearsContent(Node n, ContentSet c) {
+    n =
+      any(PostUpdateNode pun, Content d |
+        d.impliesClearOf(c) and storeStepImpl(_, d, pun, true)
+      |
+        pun
+      ).getPreUpdateNode() and
+    (
+      not exists(Operand op, Cpp::Operation p |
+        n.(IndirectOperand).hasOperandAndIndirectionIndex(op, _) and
+        (
+          p instanceof Cpp::AssignPointerAddExpr or
+          p instanceof Cpp::AssignPointerSubExpr or
+          p instanceof Cpp::CrementOperation
+        )
+      |
+        p.getAnOperand() = op.getUse().getAst()
+      )
+      or
+      forex(PostUpdateNode pun, Content d |
+        pragma[only_bind_into](d).impliesClearOf(pragma[only_bind_into](c)) and
+        storeStepImpl(_, d, pun, true) and
+        pun.getPreUpdateNode() = n
+      |
+        c.(Content).getIndirectionIndex() = d.getIndirectionIndex()
+      )
+    )
+  }
 }
 
-import NodeStars
+import Cached
+
+private int getNumberOfIndirections(Node n) {
+  result = n.(RawIndirectOperand).getIndirectionIndex()
+  or
+  result = n.(RawIndirectInstruction).getIndirectionIndex()
+  or
+  result = n.(VariableNode).getIndirectionIndex()
+  or
+  result = n.(PostUpdateNodeImpl).getIndirectionIndex()
+  or
+  result = n.(FinalParameterNode).getIndirectionIndex()
+  or
+  result = n.(BodyLessParameterNodeImpl).getIndirectionIndex()
+}
+
+/**
+ * Gets the number of stars (i.e., `*`s) needed to produce the `toString`
+ * output for `n`.
+ */
+string stars(Node n) { result = repeatStars(getNumberOfIndirections(n)) }
 
 /**
  * A cut-down `DataFlow::Node` class that does not depend on the output of SSA.
@@ -181,7 +363,7 @@ abstract class InstructionNode0 extends Node0Impl {
   override Location getLocationImpl() {
     if exists(instr.getAst().getLocation())
     then result = instr.getAst().getLocation()
-    else result instanceof UnknownDefaultLocation
+    else result instanceof UnknownLocation
   }
 
   final override predicate isGLValue() { exists(getInstructionType(instr, true)) }
@@ -226,7 +408,7 @@ abstract class OperandNode0 extends Node0Impl {
   override Location getLocationImpl() {
     if exists(op.getDef().getAst().getLocation())
     then result = op.getDef().getAst().getLocation()
-    else result instanceof UnknownDefaultLocation
+    else result instanceof UnknownLocation
   }
 
   final override predicate isGLValue() { exists(getOperandType(op, true)) }
@@ -331,10 +513,15 @@ private module IndirectInstructions {
 
 import IndirectInstructions
 
-/** Gets the callable in which this node occurs. */
-DataFlowCallable nodeGetEnclosingCallable(Node n) {
-  result.getUnderlyingCallable() = n.getEnclosingCallable()
+predicate isPostUpdateNodeImpl(Operand operand, int indirectionIndex) {
+  operand = any(FieldAddress fa).getObjectAddressOperand() and
+  indirectionIndex = [0 .. Ssa::countIndirectionsForCppType(Ssa::getLanguageType(operand))]
+  or
+  Ssa::isModifiableByCall(operand, indirectionIndex)
 }
+
+/** Gets the callable in which this node occurs. */
+DataFlowCallable nodeGetEnclosingCallable(Node n) { result = n.getEnclosingCallable() }
 
 /** Holds if `p` is a `ParameterNode` of `c` with position `pos`. */
 predicate isParameterNode(ParameterNode p, DataFlowCallable c, ParameterPosition pos) {
@@ -353,10 +540,30 @@ predicate isArgumentNode(ArgumentNode arg, DataFlowCall c, ArgumentPosition pos)
  */
 abstract class ArgumentNode extends Node {
   /**
+   * Holds if this argument occurs at the given position in the given call,
+   * and this call is represented in the source code.
+   * The instance argument is considered to have index `-1`.
+   */
+  predicate sourceArgumentOf(CallInstruction call, ArgumentPosition pos) { none() }
+
+  /**
+   * Holds if this argument occurs at the given position in the given call,
+   * and this call is part of a summary.
+   * The instance argument is considered to have index `-1`.
+   */
+  predicate summaryArgumentOf(FlowSummaryImpl::Public::SummarizedCallable call, ArgumentPosition pos) {
+    none()
+  }
+
+  /**
    * Holds if this argument occurs at the given position in the given call.
    * The instance argument is considered to have index `-1`.
    */
-  abstract predicate argumentOf(DataFlowCall call, ArgumentPosition pos);
+  final predicate argumentOf(DataFlowCall call, ArgumentPosition pos) {
+    this.sourceArgumentOf(call.asCallInstruction(), pos)
+    or
+    this.summaryArgumentOf(call.asSummaryCall(), pos)
+  }
 
   /** Gets the call in which this node is an argument. */
   DataFlowCall getCall() { this.argumentOf(result, _) }
@@ -371,19 +578,75 @@ private class PrimaryArgumentNode extends ArgumentNode, OperandNode {
 
   PrimaryArgumentNode() { exists(CallInstruction call | op = call.getAnArgumentOperand()) }
 
-  override predicate argumentOf(DataFlowCall call, ArgumentPosition pos) {
-    op = call.getArgumentOperand(pos.(DirectPosition).getIndex())
+  override predicate sourceArgumentOf(CallInstruction call, ArgumentPosition pos) {
+    op = call.getArgumentOperand(pos.(DirectPosition).getArgumentIndex())
   }
 }
 
 private class SideEffectArgumentNode extends ArgumentNode, SideEffectOperandNode {
-  override predicate argumentOf(DataFlowCall dfCall, ArgumentPosition pos) {
+  override predicate sourceArgumentOf(CallInstruction c, ArgumentPosition pos) {
     exists(int indirectionIndex |
       pos = TIndirectionPosition(argumentIndex, pragma[only_bind_into](indirectionIndex)) and
-      this.getCallInstruction() = dfCall.asCallInstruction() and
-      super.hasAddressOperandAndIndirectionIndex(_, pragma[only_bind_into](indirectionIndex))
+      this.getCallInstruction() = c and
+      super.hasAddressOperandAndIndirectionIndex(arg, pragma[only_bind_into](indirectionIndex))
     )
   }
+}
+
+/**
+ * In order to implement a MaD summary for a flow such as:
+ * ```
+ * struct Foo {
+ *   int x;
+ *   Foo(int x) { // (2)
+ *     this->x = x;
+ *   }
+ * }
+ *
+ * std::vector<Foo> v;
+ * int x = source();
+ * v.emplace_back(x); // (1)
+ * sink(v.back());
+ * ```
+ * we model it as if the code was:
+ * ```
+ * v.__emplace_back(x, &Foo)
+ * ```
+ * (never mind that this is not real C++ since you cannot take the address of a
+ * constructor.)
+ * where `__emplace_back` invokes `Foo` with the `x` argument and returns the
+ * result.
+ *
+ * This class serves as the argument node for `&Foo`.
+ */
+private class ForwarderConstructorArgumentNode extends ArgumentNode,
+  TForwarderConstructorArgumentNode
+{
+  private CallInstruction call;
+
+  ForwarderConstructorArgumentNode() { this = TForwarderConstructorArgumentNode(call) }
+
+  override predicate sourceArgumentOf(CallInstruction c, ArgumentPosition pos) {
+    c = call and pos = TForwardPosition()
+  }
+
+  /**
+   * Gets a constructor which may be targeted by this forwarding call.
+   */
+  Cpp::Constructor getAConstructor() {
+    result =
+      External::ConstructorForwarding::getForwardingConstructor(call.getStaticCallTarget(), _)
+  }
+
+  override DataFlowCallable getEnclosingCallable() {
+    result.asSourceCallable() = this.getFunction()
+  }
+
+  override Declaration getFunction() { result = call.getEnclosingFunction() }
+
+  override Location getLocationImpl() { result = call.getLocation() }
+
+  override string toStringImpl() { result = "forwarder for " + call.toString() }
 }
 
 /**
@@ -398,9 +661,26 @@ class SummaryArgumentNode extends ArgumentNode, FlowSummaryNode {
     FlowSummaryImpl::Private::summaryArgumentNode(call_.getReceiver(), this.getSummaryNode(), pos_)
   }
 
-  override predicate argumentOf(DataFlowCall call, ArgumentPosition pos) {
-    call = call_ and
+  override predicate summaryArgumentOf(
+    FlowSummaryImpl::Public::SummarizedCallable call, ArgumentPosition pos
+  ) {
+    call = call_.asSummaryCall() and
     pos = pos_
+  }
+}
+
+/** An argument node that re-enters return output as input to a flow summary. */
+private class FlowSummaryArgumentNode extends ArgumentNode, FlowSummaryNode {
+  private CallInstruction callInstruction;
+  private ReturnKind rk;
+
+  FlowSummaryArgumentNode() {
+    this.getSummaryNode() = FlowSummaryImpl::Private::summaryArgumentNode(callInstruction, rk)
+  }
+
+  override predicate sourceArgumentOf(CallInstruction call, ArgumentPosition pos) {
+    call = callInstruction and
+    pos = TFlowSummaryPosition(rk)
   }
 }
 
@@ -411,7 +691,49 @@ class ParameterPosition = Position;
 class ArgumentPosition = Position;
 
 abstract class Position extends TPosition {
+  /** Gets a textual representation of this position. */
   abstract string toString();
+
+  /**
+   * Gets the argument index of this position. The qualifier of a call has
+   * argument index `-1`.
+   */
+  abstract int getArgumentIndex();
+
+  /** Gets the indirection index of this position. */
+  abstract int getIndirectionIndex();
+
+  /**
+   * Gets the parameter of `f` associated with this position, if any.
+   *
+   * Since a `Position` is defined by both an argument index and an
+   * indirection multiple `Position`s can be associated with the
+   * same `Parameter`.
+   */
+  Parameter getParameter(Function f) {
+    result.getFunction() = f and
+    this.getArgumentIndex() = result.getIndex()
+  }
+
+  /**
+   * Gets the argument (or qualifier) of `call` associated with this position, if any.
+   *
+   * Since a `Position` is defined by both an argument index and an
+   * indirection multiple `Position`s can be associated with the
+   * same argument/qualifier.
+   */
+  Expr getArgument(Cpp::Call call) {
+    result = call.getArgument(this.getArgumentIndex())
+    or
+    this.getArgumentIndex() = -1 and
+    result = call.getQualifier()
+  }
+
+  /**
+   * Holds if this position is the synthetic argument for an address of a
+   * constructor used for functions which perform "perfect forwarding".
+   */
+  predicate isForward() { none() }
 }
 
 class DirectPosition extends Position, TDirectPosition {
@@ -421,13 +743,15 @@ class DirectPosition extends Position, TDirectPosition {
 
   override string toString() {
     index = -1 and
-    result = "this"
+    result = "this pointer"
     or
     index != -1 and
     result = index.toString()
   }
 
-  int getIndex() { result = index }
+  override int getArgumentIndex() { result = index }
+
+  final override int getIndirectionIndex() { result = 0 }
 }
 
 class IndirectionPosition extends Position, TIndirectionPosition {
@@ -438,24 +762,58 @@ class IndirectionPosition extends Position, TIndirectionPosition {
 
   override string toString() {
     if argumentIndex = -1
-    then if indirectionIndex > 0 then result = "this indirection" else result = "this"
-    else
-      if indirectionIndex > 0
-      then result = argumentIndex.toString() + " indirection"
-      else result = argumentIndex.toString()
+    then result = repeatStars(indirectionIndex - 1) + "this"
+    else result = repeatStars(indirectionIndex) + argumentIndex.toString()
   }
 
-  int getArgumentIndex() { result = argumentIndex }
+  override int getArgumentIndex() { result = argumentIndex }
 
-  int getIndirectionIndex() { result = indirectionIndex }
+  final override int getIndirectionIndex() { result = indirectionIndex }
+}
+
+class FlowSummaryPosition extends Position, TFlowSummaryPosition {
+  ReturnKind rk;
+
+  FlowSummaryPosition() { this = TFlowSummaryPosition(rk) }
+
+  override string toString() { result = "write to: " + rk.toString() }
+
+  override int getArgumentIndex() { none() }
+
+  final override int getIndirectionIndex() { result = rk.getIndirectionIndex() }
+}
+
+class ForwardPosition extends Position, TForwardPosition {
+  final override predicate isForward() { any() }
+
+  override int getArgumentIndex() { none() }
+
+  final override int getIndirectionIndex() { result = 0 }
+
+  override string toString() { result = "forward" }
 }
 
 newtype TPosition =
-  TDirectPosition(int argumentIndex) { exists(any(CallInstruction c).getArgument(argumentIndex)) } or
+  TDirectPosition(int argumentIndex) {
+    exists(any(CallInstruction c).getArgument(argumentIndex))
+    or
+    // Handle the rare case where there is a function definition but no call to
+    // the function.
+    exists(any(Cpp::Function f).getParameter(argumentIndex))
+  } or
   TIndirectionPosition(int argumentIndex, int indirectionIndex) {
     Ssa::hasIndirectOperand(any(CallInstruction call).getArgumentOperand(argumentIndex),
       indirectionIndex)
-  }
+    or
+    // Handle the rare case where there is a function definition but no call to
+    // the function.
+    exists(Cpp::Function f, Cpp::Parameter p |
+      p = f.getParameter(argumentIndex) and
+      indirectionIndex = [1 .. Ssa::getMaxIndirectionsForPRType(p.getUnspecifiedType())]
+    )
+  } or
+  TForwardPosition() or
+  TFlowSummaryPosition(ReturnKind rk) { FlowSummaryImpl::Private::relevantFlowSummaryPosition(rk) }
 
 private newtype TReturnKind =
   TNormalReturnKind(int indirectionIndex) {
@@ -470,7 +828,7 @@ private newtype TReturnKind =
       [0 .. max(Cpp::Function f |
           not exists(f.getBlock())
         |
-          Ssa::getMaxIndirectionsForType(f.getUnspecifiedType()) - 1 // -1 because a returned value is a prvalue not a glvalue
+          Ssa::getMaxIndirectionsForPRType(f.getUnspecifiedType())
         )]
   } or
   TIndirectReturnKind(int argumentIndex, int indirectionIndex) {
@@ -485,7 +843,7 @@ private newtype TReturnKind =
       [0 .. max(Cpp::Function f |
           not exists(f.getBlock())
         |
-          Ssa::getMaxIndirectionsForType(f.getParameter(argumentIndex).getUnspecifiedType()) - 1 // -1 because an argument is a prvalue not a glvalue
+          Ssa::getMaxIndirectionsForPRType(f.getParameter(argumentIndex).getUnspecifiedType())
         )]
   }
 
@@ -501,6 +859,15 @@ class ReturnKind extends TReturnKind {
 
   /** Gets a textual representation of this return kind. */
   abstract string toString();
+
+  /** Holds if this `ReturnKind` is generated from a `return` statement. */
+  abstract predicate isNormalReturn();
+
+  /**
+   * Holds if this `ReturnKind` is generated from a write to the parameter with
+   * index `argumentIndex`
+   */
+  abstract predicate isIndirectReturn(int argumentIndex);
 }
 
 /**
@@ -514,6 +881,10 @@ class NormalReturnKind extends ReturnKind, TNormalReturnKind {
   override int getIndirectionIndex() { result = indirectionIndex }
 
   override string toString() { result = "indirect return" }
+
+  override predicate isNormalReturn() { any() }
+
+  override predicate isIndirectReturn(int argumentIndex) { none() }
 }
 
 /**
@@ -528,6 +899,10 @@ private class IndirectReturnKind extends ReturnKind, TIndirectReturnKind {
   override int getIndirectionIndex() { result = indirectionIndex }
 
   override string toString() { result = "indirect outparam[" + argumentIndex.toString() + "]" }
+
+  override predicate isNormalReturn() { none() }
+
+  override predicate isIndirectReturn(int argumentIndex_) { argumentIndex_ = argumentIndex }
 }
 
 /** A data flow node that occurs as the result of a `ReturnStmt`. */
@@ -783,87 +1158,10 @@ private int getMinIndirectionForGlobalDef(Ssa::GlobalDef def) {
   result = getMinIndirectionsForType(def.getUnspecifiedType())
 }
 
-/**
- * Holds if data can flow from `node1` to `node2` in a way that loses the
- * calling context. For example, this would happen with flow through a
- * global or static variable.
- */
-predicate jumpStep(Node n1, Node n2) {
-  exists(GlobalLikeVariable v |
-    exists(Ssa::GlobalUse globalUse |
-      v = globalUse.getVariable() and
-      n1.(FinalGlobalValue).getGlobalUse() = globalUse
-    |
-      globalUse.getIndirection() = getMinIndirectionForGlobalUse(globalUse) and
-      v = n2.asVariable()
-      or
-      v = n2.asIndirectVariable(globalUse.getIndirection())
-    )
-    or
-    exists(Ssa::GlobalDef globalDef |
-      v = globalDef.getVariable() and
-      n2.(InitialGlobalValue).getGlobalDef() = globalDef
-    |
-      globalDef.getIndirection() = getMinIndirectionForGlobalDef(globalDef) and
-      v = n1.asVariable()
-      or
-      v = n1.asIndirectVariable(globalDef.getIndirection())
-    )
-  )
-  or
-  // models-as-data summarized flow
-  FlowSummaryImpl::Private::Steps::summaryJumpStep(n1.(FlowSummaryNode).getSummaryNode(),
-    n2.(FlowSummaryNode).getSummaryNode())
-}
+bindingset[c]
+pragma[inline_late]
+private int getIndirectionIndexLate(Content c) { result = c.getIndirectionIndex() }
 
-/**
- * Holds if data can flow from `node1` to `node2` via an assignment to `f`.
- * Thus, `node2` references an object with a field `f` that contains the
- * value of `node1`.
- *
- * The boolean `certain` is true if the destination address does not involve
- * any pointer arithmetic, and false otherwise. This has to do with whether a
- * store step can be used to clear a field (see `clearsContent`).
- */
-predicate storeStepImpl(Node node1, Content c, Node node2, boolean certain) {
-  exists(
-    PostFieldUpdateNode postFieldUpdate, int indirectionIndex1, int numberOfLoads,
-    StoreInstruction store
-  |
-    postFieldUpdate = node2 and
-    nodeHasInstruction(node1, store, pragma[only_bind_into](indirectionIndex1)) and
-    postFieldUpdate.getIndirectionIndex() = 1 and
-    numberOfLoadsFromOperand(postFieldUpdate.getFieldAddress(),
-      store.getDestinationAddressOperand(), numberOfLoads, certain)
-  |
-    exists(FieldContent fc | fc = c |
-      fc.getField() = postFieldUpdate.getUpdatedField() and
-      fc.getIndirectionIndex() = 1 + indirectionIndex1 + numberOfLoads
-    )
-    or
-    exists(UnionContent uc | uc = c |
-      uc.getAField() = postFieldUpdate.getUpdatedField() and
-      uc.getIndirectionIndex() = 1 + indirectionIndex1 + numberOfLoads
-    )
-  )
-  or
-  // models-as-data summarized flow
-  FlowSummaryImpl::Private::Steps::summaryStoreStep(node1.(FlowSummaryNode).getSummaryNode(), c,
-    node2.(FlowSummaryNode).getSummaryNode()) and
-  certain = true
-}
-
-/**
- * Holds if data can flow from `node1` to `node2` via an assignment to `f`.
- * Thus, `node2` references an object with a field `f` that contains the
- * value of `node1`.
- */
-predicate storeStep(Node node1, ContentSet c, Node node2) { storeStepImpl(node1, c, node2, _) }
-
-/**
- * Holds if `operandFrom` flows to `operandTo` using a sequence of conversion-like
- * operations and exactly `n` `LoadInstruction` operations.
- */
 private predicate numberOfLoadsFromOperandRec(
   Operand operandFrom, Operand operandTo, int ind, boolean certain
 ) {
@@ -915,68 +1213,6 @@ predicate nodeHasInstruction(Node node, Instruction instr, int indirectionIndex)
 }
 
 /**
- * Holds if data can flow from `node1` to `node2` via a read of `f`.
- * Thus, `node1` references an object with a field `f` whose value ends up in
- * `node2`.
- */
-predicate readStep(Node node1, ContentSet c, Node node2) {
-  exists(FieldAddress fa1, Operand operand, int numberOfLoads, int indirectionIndex2 |
-    nodeHasOperand(node2, operand, indirectionIndex2) and
-    // The `1` here matches the `node2.getIndirectionIndex() = 1` conjunct
-    // in `storeStep`.
-    nodeHasOperand(node1, fa1.getObjectAddressOperand(), 1) and
-    numberOfLoadsFromOperand(fa1, operand, numberOfLoads, _)
-  |
-    exists(FieldContent fc | fc = c |
-      fc.getField() = fa1.getField() and
-      fc.getIndirectionIndex() = indirectionIndex2 + numberOfLoads
-    )
-    or
-    exists(UnionContent uc | uc = c |
-      uc.getAField() = fa1.getField() and
-      uc.getIndirectionIndex() = indirectionIndex2 + numberOfLoads
-    )
-  )
-  or
-  // models-as-data summarized flow
-  FlowSummaryImpl::Private::Steps::summaryReadStep(node1.(FlowSummaryNode).getSummaryNode(), c,
-    node2.(FlowSummaryNode).getSummaryNode())
-}
-
-/**
- * Holds if values stored inside content `c` are cleared at node `n`.
- */
-predicate clearsContent(Node n, ContentSet c) {
-  n =
-    any(PostUpdateNode pun, Content d | d.impliesClearOf(c) and storeStepImpl(_, d, pun, true) | pun)
-        .getPreUpdateNode() and
-  (
-    // The crement operations and pointer addition and subtraction self-assign. We do not
-    // want to clear the contents if it is indirectly pointed at by any of these operations,
-    // as part of the contents might still be accessible afterwards. If there is no such
-    // indirection clearing the contents is safe.
-    not exists(Operand op, Cpp::Operation p |
-      n.(IndirectOperand).hasOperandAndIndirectionIndex(op, _) and
-      (
-        p instanceof Cpp::AssignPointerAddExpr or
-        p instanceof Cpp::AssignPointerSubExpr or
-        p instanceof Cpp::CrementOperation
-      )
-    |
-      p.getAnOperand() = op.getUse().getAst()
-    )
-    or
-    forex(PostUpdateNode pun, Content d |
-      pragma[only_bind_into](d).impliesClearOf(pragma[only_bind_into](c)) and
-      storeStepImpl(_, d, pun, true) and
-      pun.getPreUpdateNode() = n
-    |
-      c.(Content).getIndirectionIndex() = d.getIndirectionIndex()
-    )
-  )
-}
-
-/**
  * Holds if the value that is being tracked is expected to be stored inside content `c`
  * at node `n`.
  */
@@ -988,23 +1224,17 @@ predicate localMustFlowStep(Node node1, Node node2) { none() }
 
 /** Gets the type of `n` used for type pruning. */
 DataFlowType getNodeType(Node n) {
-  suppressUnusedNode(n) and
+  exists(n) and
   result instanceof VoidType // stub implementation
 }
-
-/** Gets a string representation of a type returned by `getNodeType`. */
-string ppReprType(DataFlowType t) { none() } // stub implementation
 
 /**
  * Holds if `t1` and `t2` are compatible, that is, whether data can flow from
  * a node of type `t1` to a node of type `t2`.
  */
-pragma[inline]
 predicate compatibleTypes(DataFlowType t1, DataFlowType t2) {
-  any() // stub implementation
+  t1 instanceof VoidType and t2 instanceof VoidType // stub implementation
 }
-
-private predicate suppressUnusedNode(Node n) { any() }
 
 //////////////////////////////////////////////////////////////////////////////
 // Java QL library compatibility wrappers
@@ -1013,13 +1243,6 @@ private predicate suppressUnusedNode(Node n) { any() }
 class CastNode extends Node {
   CastNode() { none() } // stub implementation
 }
-
-cached
-private newtype TDataFlowCallable =
-  TSourceCallable(Cpp::Declaration decl) {
-    not decl instanceof FlowSummaryImpl::Public::SummarizedCallable
-  } or
-  TSummarizedCallable(FlowSummaryImpl::Public::SummarizedCallable c)
 
 /**
  * A callable, which may be:
@@ -1062,16 +1285,6 @@ class DataFlowCallable extends TDataFlowCallable {
     result = this.asSummarizedCallable() or // SummarizedCallable = Function (in CPP)
     result = this.asSourceCallable()
   }
-
-  /** Gets a best-effort total ordering. */
-  int totalorder() {
-    this =
-      rank[result](DataFlowCallable c, string file, int startline, int startcolumn |
-        c.getLocation().hasLocationInfo(file, startline, startcolumn, _, _)
-      |
-        c order by file, startline, startcolumn
-      )
-  }
 }
 
 /**
@@ -1108,16 +1321,28 @@ class SummarizedCallable extends DataFlowCallable, TSummarizedCallable {
 
 class DataFlowExpr = Expr;
 
-class DataFlowType = Type;
+final private class TypeFinal = Type;
 
-cached
-private newtype TDataFlowCall =
-  TNormalCall(CallInstruction call) or
-  TSummaryCall(
-    FlowSummaryImpl::Public::SummarizedCallable c, FlowSummaryImpl::Private::SummaryNode receiver
-  ) {
-    FlowSummaryImpl::Private::summaryCallbackRange(c, receiver)
-  }
+class DataFlowType extends TypeFinal {
+  string toString() { result = "" }
+}
+
+private predicate summarizedCallableIsManual(SummarizedCallable sc) {
+  sc.asSummarizedCallable().hasManualModel()
+}
+
+private DataFlowCallable getTarget(Declaration target) {
+  // Don't use the source callable if there is a manual model for the target.
+  not exists(SummarizedCallable sc |
+    sc.asSummarizedCallable() = target and
+    summarizedCallableIsManual(sc)
+  ) and
+  result.asSourceCallable() = target
+  or
+  // When there is no function body, or when we have a manual model, dispatch to the summary.
+  (not target.hasDefinition() or summarizedCallableIsManual(result)) and
+  result.asSummarizedCallable() = target
+}
 
 /**
  * A function call relevant for data flow. This includes calls from source
@@ -1130,6 +1355,11 @@ class DataFlowCall extends TDataFlowCall {
   CallInstruction asCallInstruction() { none() }
 
   /**
+   * Gets the underlying summarized call, if any.
+   */
+  FlowSummaryImpl::Public::SummarizedCallable asSummaryCall() { none() }
+
+  /**
    * Gets the operand the specifies the target function of the call.
    */
   CallTargetOperand getCallTargetOperand() { none() }
@@ -1137,7 +1367,20 @@ class DataFlowCall extends TDataFlowCall {
   /**
    * Gets the `Function` that the call targets, if this is statically known.
    */
-  DataFlowCallable getStaticCallTarget() { none() }
+  Declaration getStaticCallSourceTarget() { none() }
+
+  /**
+   * Gets the target of this call. We use the following strategy for deciding
+   * between the source callable and a summarized callable:
+   * - If there is a manual summary then we always use the manual summary.
+   * - If there is a source callable and we only have generated summaries
+   * we use the source callable.
+   * - If there is no source callable then we use the summary regardless of
+   * whether is it manual or generated.
+   */
+  final DataFlowCallable getStaticCallTarget() {
+    result = getTarget(this.getStaticCallSourceTarget())
+  }
 
   /**
    * Gets the `index`'th argument operand. The qualifier is considered to have index `-1`.
@@ -1169,16 +1412,6 @@ class DataFlowCall extends TDataFlowCall {
    * Gets the location of this call.
    */
   Location getLocation() { none() }
-
-  /** Gets a best-effort total ordering. */
-  int totalorder() {
-    this =
-      rank[result](DataFlowCall c, int startline, int startcolumn |
-        c.getLocation().hasLocationInfo(_, startline, startcolumn, _, _)
-      |
-        c order by startline, startcolumn
-      )
-  }
 }
 
 /**
@@ -1193,14 +1426,12 @@ private class NormalCall extends DataFlowCall, TNormalCall {
 
   override CallTargetOperand getCallTargetOperand() { result = call.getCallTargetOperand() }
 
-  override DataFlowCallable getStaticCallTarget() {
-    result.getUnderlyingCallable() = call.getStaticCallTarget()
-  }
+  override Declaration getStaticCallSourceTarget() { result = call.getStaticCallTarget() }
 
   override ArgumentOperand getArgumentOperand(int index) { result = call.getArgumentOperand(index) }
 
   override DataFlowCallable getEnclosingCallable() {
-    result.getUnderlyingCallable() = call.getEnclosingFunction()
+    result.asSourceCallable() = call.getEnclosingFunction()
   }
 
   override string toString() { result = call.toString() }
@@ -1232,6 +1463,8 @@ class SummaryCall extends DataFlowCall, TSummaryCall {
    */
   FlowSummaryImpl::Private::SummaryNode getReceiver() { result = receiver }
 
+  final override FlowSummaryImpl::Public::SummarizedCallable asSummaryCall() { result = c }
+
   // no implementation for `getCallTargetOperand()`, `getStaticCallTarget()`
   // or `getArgumentOperand(int index)`. This is because the flow summary
   // library is responsible for finding the call target, and there are no
@@ -1257,12 +1490,14 @@ module IsUnreachableInCall {
     int getValue() { result = value }
   }
 
-  pragma[nomagic]
+  bindingset[right]
+  pragma[inline_late]
   private predicate ensuresEq(Operand left, Operand right, int k, IRBlock block, boolean areEqual) {
     any(G::IRGuardCondition guard).ensuresEq(left, right, k, block, areEqual)
   }
 
-  pragma[nomagic]
+  bindingset[right]
+  pragma[inline_late]
   private predicate ensuresLt(Operand left, Operand right, int k, IRBlock block, boolean areEqual) {
     any(G::IRGuardCondition guard).ensuresLt(left, right, k, block, areEqual)
   }
@@ -1271,15 +1506,6 @@ module IsUnreachableInCall {
     string toString() { result = "NodeRegion" }
 
     predicate contains(Node n) { this = n.getBasicBlock() }
-
-    int totalOrder() {
-      this =
-        rank[result](IRBlock b, int startline, int startcolumn |
-          b.getLocation().hasLocationInfo(_, startline, startcolumn, _, _)
-        |
-          b order by startline, startcolumn
-        )
-    }
   }
 
   predicate isUnreachableInCall(NodeRegion block, DataFlowCall call) {
@@ -1325,7 +1551,7 @@ import IsUnreachableInCall
  * Holds if access paths with `c` at their head always should be tracked at high
  * precision. This disables adaptive access path precision for such access paths.
  */
-predicate forceHighPrecision(Content c) { none() }
+predicate forceHighPrecision(Content c) { c instanceof ElementContent }
 
 /** Holds if `n` should be hidden from path explanations. */
 predicate nodeIsHidden(Node n) {
@@ -1336,6 +1562,12 @@ predicate nodeIsHidden(Node n) {
   n instanceof FinalGlobalValue
   or
   n instanceof InitialGlobalValue
+  or
+  n instanceof SsaSynthNode
+  or
+  n.(FlowSummaryNode).getSummaryNode().isHidden()
+  or
+  n instanceof ForwarderConstructorArgumentNode
 }
 
 predicate neverSkipInPathGraph(Node n) {
@@ -1345,26 +1577,124 @@ predicate neverSkipInPathGraph(Node n) {
   exists(n.asIndirectDefinition())
 }
 
-class LambdaCallKind = Unit;
+private newtype TLambdaCallKind =
+  TFunctionPointer() or
+  TFunctor()
+
+class LambdaCallKind extends TLambdaCallKind {
+  predicate isFunctionPointer() { this = TFunctionPointer() }
+
+  predicate isFunctor() { this = TFunctor() }
+
+  string toString() {
+    this.isFunctionPointer() and
+    result = "Function pointer kind"
+    or
+    this.isFunctor() and
+    result = "Functor kind"
+  }
+}
+
+private class ConstructorCallInstruction extends CallInstruction {
+  Cpp::Class constructedType;
+
+  ConstructorCallInstruction() {
+    this.getStaticCallTarget().(Cpp::Constructor).getDeclaringType() = constructedType
+  }
+
+  Cpp::Class getConstructedType() { result = constructedType }
+}
+
+private class OperatorCall extends Cpp::MemberFunction {
+  OperatorCall() { this.hasName("operator()") }
+}
+
+private predicate isFunctorCreationWithoutConstructor(Node creation, OperatorCall operator) {
+  exists(UninitializedInstruction init, Instruction dest |
+    // A construction of an object with no constructor. In this case we use
+    // the `UninitializedInstruction` as the creation node.
+    init = creation.asInstruction() and
+    dest = init.getDestinationAddress() and
+    not any(ConstructorCallInstruction constructorCall).getThisArgument() = dest and
+    operator.getDeclaringType() = init.getResultType()
+  )
+  or
+  // Workaround for an extractor bug. In this snippet:
+  // ```
+  // struct S { };
+  // void f(S);
+  // f(S());
+  // ```
+  // The expression `S()` is represented as a 0 literal in the database.
+  exists(ConstantValueInstruction constant |
+    constant.getValue() = "0" and
+    creation.asInstruction() = constant and
+    constant.getResultType() = operator.getDeclaringType()
+  )
+}
+
+private predicate isFunctorCreationWithConstructor(Node creation, OperatorCall operator) {
+  exists(DataFlowCall constructorCall, IndirectionPosition pos |
+    // A construction of an object with a constructor. In this case we use
+    // the post-update node of the qualifier
+    pos.getArgumentIndex() = -1 and
+    isArgumentNode(creation.(PostUpdateNode).getPreUpdateNode(), constructorCall, pos) and
+    operator.getDeclaringType() =
+      constructorCall.asCallInstruction().(ConstructorCallInstruction).getConstructedType()
+  )
+}
 
 /** Holds if `creation` is an expression that creates a lambda of kind `kind` for `c`. */
 predicate lambdaCreation(Node creation, LambdaCallKind kind, DataFlowCallable c) {
-  creation.asInstruction().(FunctionAddressInstruction).getFunctionSymbol() = c.asSourceCallable() and
-  exists(kind)
+  kind.isFunctionPointer() and
+  creation.asInstruction().(FunctionAddressInstruction).getFunctionSymbol() = c.asSourceCallable()
+  or
+  kind.isFunctionPointer() and
+  c = getTarget(creation.(ForwarderConstructorArgumentNode).getAConstructor())
+  or
+  kind.isFunctor() and
+  exists(OperatorCall operator | operator = c.asSourceCallable() |
+    isFunctorCreationWithoutConstructor(creation, operator)
+    or
+    isFunctorCreationWithConstructor(creation, operator)
+  )
 }
 
 /** Holds if `call` is a lambda call of kind `kind` where `receiver` is the lambda expression. */
 predicate lambdaCall(DataFlowCall call, LambdaCallKind kind, Node receiver) {
-  call.(SummaryCall).getReceiver() = receiver.(FlowSummaryNode).getSummaryNode() and
-  exists(kind)
+  kind.isFunctionPointer() and
+  (
+    call.(SummaryCall).getReceiver() = receiver.(FlowSummaryNode).getSummaryNode()
+    or
+    // No need to infer a lambda call if we already have a static dispatch target.
+    // We only need to check this in the disjunct since a `SummaryCall` never
+    // has a result for `getStaticCallTarget`.
+    not exists(call.getStaticCallTarget()) and
+    call.asCallInstruction().getCallTargetOperand() = receiver.asOperand()
+  )
+  or
+  kind.isFunctor() and
+  (
+    call.(SummaryCall).getReceiver() = receiver.(FlowSummaryNode).getSummaryNode()
+    or
+    not exists(call.getStaticCallTarget()) and
+    call.asCallInstruction().getThisArgumentOperand() = receiver.asOperand()
+  )
 }
 
 /** Extra data-flow steps needed for lambda flow analysis. */
-predicate additionalLambdaFlowStep(Node nodeFrom, Node nodeTo, boolean preservesValue) { none() }
+predicate additionalLambdaFlowStep(Node nodeFrom, Node nodeTo, boolean preservesValue) {
+  preservesValue = false and
+  exists(ContentSet cs | cs.isSingleton(any(UnionContent uc)) |
+    storeStep(nodeFrom, cs, nodeTo)
+    or
+    readStep(nodeFrom, cs, nodeTo)
+  )
+}
 
-predicate knownSourceModel(Node source, string model) { none() }
+predicate knownSourceModel(Node source, string model) { External::sourceNode(source, _, model) }
 
-predicate knownSinkModel(Node sink, string model) { none() }
+predicate knownSinkModel(Node sink, string model) { External::sinkNode(sink, _, model) }
 
 /**
  * Holds if flow is allowed to pass from parameter `p` and back to itself as a
@@ -1390,11 +1720,6 @@ private predicate fieldHasApproxName(Field f, string s) {
 }
 
 private predicate unionHasApproxName(Cpp::Union u, string s) { s = u.getName().charAt(0) }
-
-cached
-private newtype TContentApprox =
-  TFieldApproxContent(string s) { fieldHasApproxName(_, s) } or
-  TUnionApproxContent(string s) { unionHasApproxName(_, s) }
 
 /** An approximated `Content`. */
 class ContentApprox extends TContentApprox {
@@ -1425,12 +1750,16 @@ private class UnionApproxContent extends ContentApprox, TUnionApproxContent {
   final override string toString() { result = s }
 }
 
+private class ElementApproxContent extends ContentApprox, TElementApproxContent {
+  final override string toString() { result = "ElementApprox" }
+}
+
 /** Gets an approximated value for content `c`. */
 pragma[inline]
 ContentApprox getContentApprox(Content c) {
   exists(string prefix, Field f |
     prefix = result.(FieldApproxContent).getPrefix() and
-    f = c.(FieldContent).getField() and
+    f = c.(NonUnionFieldContent).getField() and
     fieldHasApproxName(f, prefix)
   )
   or
@@ -1439,6 +1768,9 @@ ContentApprox getContentApprox(Content c) {
     u = c.(UnionContent).getUnion() and
     unionHasApproxName(u, prefix)
   )
+  or
+  c instanceof ElementContent and
+  result instanceof ElementApproxContent
 }
 
 /**
@@ -1521,16 +1853,17 @@ private EdgeKind caseOrDefaultEdge() {
 private int countNumberOfBranchesUsingParameter(SwitchInstruction switch, ParameterNode p) {
   exists(Ssa::SourceVariable sv |
     parameterNodeHasSourceVariable(p, sv) and
-    // Count the number of cases that use the parameter. We do this by finding the phi node
-    // that merges the uses/defs of the parameter. There might be multiple such phi nodes, so
-    // we pick the one with the highest edge count.
+    // Count the number of cases that use the parameter.
     result =
-      max(SsaPhiNode phi |
-        switch.getSuccessor(caseOrDefaultEdge()).getBlock().dominanceFrontier() =
-          phi.getBasicBlock() and
-        phi.getSourceVariable() = sv
-      |
-        strictcount(phi.getAnInput())
+      strictcount(IRBlock caseblock |
+        exists(IRBlock useblock |
+          switch.getSuccessor(caseOrDefaultEdge()).getBlock() = caseblock and
+          caseblock.dominates(useblock)
+        |
+          exists(Ssa::UseImpl use | use.hasIndexInBlock(useblock, _, sv))
+          or
+          exists(Ssa::DefImpl def | def.hasIndexInBlock(sv, useblock, _))
+        )
       )
   )
 }
@@ -1614,8 +1947,6 @@ predicate validParameterAliasStep(Node node1, Node node2) {
   )
 }
 
-private predicate isTopLevel(Cpp::Stmt s) { any(Function f).getBlock().getAStmt() = s }
-
 private Cpp::Stmt getAChainedBranch(Cpp::IfStmt s) {
   result = s.getThen()
   or
@@ -1632,7 +1963,7 @@ private Instruction getAnInstruction(Node n) {
   not n instanceof InstructionNode and
   result = n.asOperand().getUse()
   or
-  result = n.(SsaPhiNode).getPhiNode().getBasicBlock().getFirstInstruction()
+  result = n.(SsaSynthNode).getBasicBlock().getFirstInstruction()
   or
   n.(IndirectInstruction).hasInstructionAndIndirectionIndex(result, _)
   or
@@ -1646,11 +1977,9 @@ private Instruction getAnInstruction(Node n) {
 }
 
 private newtype TDataFlowSecondLevelScope =
-  TTopLevelIfBranch(Cpp::Stmt s) {
-    exists(Cpp::IfStmt ifstmt | s = getAChainedBranch(ifstmt) and isTopLevel(ifstmt))
-  } or
+  TTopLevelIfBranch(Cpp::Stmt s) { s = getAChainedBranch(_) } or
   TTopLevelSwitchCase(Cpp::SwitchCase s) {
-    exists(Cpp::SwitchStmt switchstmt | s = switchstmt.getASwitchCase() and isTopLevel(switchstmt))
+    exists(Cpp::SwitchStmt switchstmt | s = switchstmt.getASwitchCase())
   }
 
 /**
@@ -1697,6 +2026,14 @@ class DataFlowSecondLevelScope extends TDataFlowSecondLevelScope {
 DataFlowSecondLevelScope getSecondLevelScope(Node n) { result.getANode() = n }
 
 /**
+ * Gets the maximum number of indirections to use for `ElementContent`.
+ *
+ * This should be equal to the largest number of stars (i.e., `*`s) in any
+ * `Element` content across all of our MaD summaries, sources, and sinks.
+ */
+int getMaxElementContentIndirectionIndex() { result = 5 }
+
+/**
  * Module that defines flow through iterators.
  * For example,
  * ```cpp
@@ -1728,9 +2065,7 @@ module IteratorFlow {
     }
   }
 
-  private module SsaInput implements SsaImpl::InputSig<Location> {
-    import Ssa::InputSigCommon
-
+  private module SsaInput implements SsaImpl::InputSig<Location, IRCfg::BasicBlock> {
     class SourceVariable = IteratorFlow::SourceVariable;
 
     /** A call to function that dereferences an iterator. */
@@ -1751,30 +2086,54 @@ module IteratorFlow {
     }
 
     /**
-     * Gets an ultimate definition of `def`.
-     *
-     * Note: Unlike `def.getAnUltimateDefinition()` this predicate also
-     * traverses back through iterator increment and decrement operations.
+     * Holds if `write` is an instruction that writes to address `address`
      */
-    private Ssa::Def getAnUltimateDefinition(Ssa::Def def) {
-      result = def.getAnUltimateDefinition()
+    private predicate isIteratorWrite(Instruction write, Operand address) {
+      exists(Ssa::DefImpl writeDef, IRBlock bb, int i |
+        writeDef.hasIndexInBlock(_, bb, i) and
+        bb.getInstruction(i) = write and
+        address = writeDef.getAddressOperand()
+      )
+    }
+
+    private module GetAnUltimateDefinitionInput implements Ssa::GetAnUltimateDefinitionSig {
+      predicate isRelevantUltimateDefinition(Ssa::Definition def) { fwd(_, def) }
+    }
+
+    private Ssa::Definition getAnUltimateDefinitionStep(Ssa::Definition def) {
+      result =
+        Ssa::GetAnUltimateDefinition<GetAnUltimateDefinitionInput>::getAnUltimateDefinition(def)
       or
       exists(IRBlock bb, int i, IteratorCrementCall crementCall, Ssa::SourceVariable sv |
         crementCall = def.getValue().asInstruction().(StoreInstruction).getSourceValue() and
         sv = def.getSourceVariable() and
         bb.getInstruction(i) = crementCall and
-        Ssa::ssaDefReachesRead(sv, result.asDef(), bb, i)
+        Ssa::ssaDefReachesRead(sv, result, bb, i)
       )
     }
 
-    /**
-     * Holds if `write` is an instruction that writes to address `address`
-     */
-    private predicate isIteratorWrite(Instruction write, Operand address) {
-      exists(Ssa::DefImpl writeDef, IRBlock bb, int i |
-        writeDef.hasIndexInBlock(bb, i, _) and
-        bb.getInstruction(i) = write and
-        address = writeDef.getAddressOperand()
+    private predicate isSource(GetsIteratorCall beginCall, Ssa::Definition def) {
+      exists(StoreInstruction beginStore |
+        beginStore = def.getValue().asInstruction() and
+        operandForFullyConvertedCall(beginStore.getSourceValueOperand(), beginCall)
+      )
+    }
+
+    private predicate isSink(Instruction writeToDeref, Ssa::Definition def) {
+      exists(IteratorPointerDereferenceCall starCall, Operand address, IRBlock bbStar, int iStar |
+        isIteratorWrite(writeToDeref, address) and
+        operandForFullyConvertedCall(address, starCall) and
+        bbStar.getInstruction(iStar) = starCall and
+        Ssa::ssaDefReachesRead(_, def, bbStar, iStar)
+      )
+    }
+
+    private predicate fwd(GetsIteratorCall beginCall, Ssa::Definition def) {
+      isSource(beginCall, def)
+      or
+      exists(Ssa::Definition def0 |
+        fwd(beginCall, def0) and
+        def0 = getAnUltimateDefinitionStep(def)
       )
     }
 
@@ -1790,17 +2149,9 @@ module IteratorFlow {
     private predicate isIteratorStoreInstruction(
       GetsIteratorCall beginCall, Instruction writeToDeref
     ) {
-      exists(
-        StoreInstruction beginStore, IRBlock bbStar, int iStar, Ssa::Def def,
-        IteratorPointerDereferenceCall starCall, Ssa::Def ultimate, Operand address
-      |
-        isIteratorWrite(writeToDeref, address) and
-        operandForFullyConvertedCall(address, starCall) and
-        bbStar.getInstruction(iStar) = starCall and
-        Ssa::ssaDefReachesRead(_, def.asDef(), bbStar, iStar) and
-        ultimate = getAnUltimateDefinition*(def) and
-        beginStore = ultimate.getValue().asInstruction() and
-        operandForFullyConvertedCall(beginStore.getSourceValueOperand(), beginCall)
+      exists(Ssa::Definition def |
+        fwd(beginCall, def) and
+        isSink(writeToDeref, def)
       )
     }
 
@@ -1808,7 +2159,7 @@ module IteratorFlow {
      * Holds if `(bb, i)` contains a write to an iterator that may have been obtained
      * by calling `begin` (or related functions) on the variable `v`.
      */
-    predicate variableWrite(IRBlock bb, int i, SourceVariable v, boolean certain) {
+    predicate variableWrite(IRCfg::BasicBlock bb, int i, SourceVariable v, boolean certain) {
       certain = false and
       exists(GetsIteratorCall beginCall, Instruction writeToDeref, IRBlock bbQual, int iQual |
         isIteratorStoreInstruction(beginCall, writeToDeref) and
@@ -1819,52 +2170,57 @@ module IteratorFlow {
     }
 
     /** Holds if `(bb, i)` reads the container variable `v`. */
-    predicate variableRead(IRBlock bb, int i, SourceVariable v, boolean certain) {
+    predicate variableRead(IRCfg::BasicBlock bb, int i, SourceVariable v, boolean certain) {
       Ssa::variableRead(bb, i, v, certain)
     }
+
+    predicate ssaCachedStageRevRef() { DataFlowIntegrationImpl::ssaCachedStageRevRef2() }
   }
 
-  private module IteratorSsa = SsaImpl::Make<Location, SsaInput>;
+  private module IteratorSsa = SsaImpl::Make<Location, IRCfg, SsaInput>;
 
-  cached
-  private newtype TSsaDef =
-    TDef(IteratorSsa::DefinitionExt def) or
-    TPhi(PhiNode phi)
+  private module DataFlowIntegrationInput implements IteratorSsa::DataFlowIntegrationInputSig {
+    private import codeql.util.Void
 
-  abstract private class SsaDef extends TSsaDef {
-    /** Gets a textual representation of this element. */
-    string toString() { none() }
+    predicate ssaDefHasSource(IteratorSsa::WriteDefinition def) { none() }
 
-    /** Gets the underlying non-phi definition or use. */
-    IteratorSsa::DefinitionExt asDef() { none() }
+    predicate allowFlowIntoUncertainDef(IteratorSsa::UncertainWriteDefinition def) { any() }
 
-    /** Gets the underlying phi node. */
-    PhiNode asPhi() { none() }
+    class GuardValue = Void;
 
-    /** Gets the location of this element. */
-    abstract Location getLocation();
+    class Guard extends Void {
+      predicate hasValueBranchEdge(IRCfg::BasicBlock bb1, IRCfg::BasicBlock bb2, GuardValue val) {
+        none()
+      }
+
+      predicate valueControlsBranchEdge(IRCfg::BasicBlock bb1, IRCfg::BasicBlock bb2, GuardValue val) {
+        none()
+      }
+    }
+
+    predicate guardDirectlyControlsBlock(Guard guard, IRCfg::BasicBlock bb, GuardValue val) {
+      none()
+    }
+
+    predicate supportBarrierGuardsOnPhiEdges() { none() }
   }
 
-  private class Def extends TDef, SsaDef {
-    IteratorSsa::DefinitionExt def;
+  private module DataFlowIntegrationImpl =
+    IteratorSsa::DataFlowIntegration<DataFlowIntegrationInput>;
 
-    Def() { this = TDef(def) }
+  private class IteratorSynthNode extends DataFlowIntegrationImpl::SsaNode {
+    IteratorSynthNode() { not this.asDefinition() instanceof IteratorSsa::WriteDefinition }
+  }
 
-    final override IteratorSsa::DefinitionExt asDef() { result = def }
-
+  private class Def extends IteratorSsa::Definition {
     final override Location getLocation() { result = this.getImpl().getLocation() }
-
-    /** Gets the variable written to by this definition. */
-    final SourceVariable getSourceVariable() { result = def.getSourceVariable() }
-
-    override string toString() { result = def.toString() }
 
     /**
      * Holds if this definition (or use) has index `index` in block `block`,
      * and is a definition (or use) of the variable `sv`.
      */
     predicate hasIndexInBlock(IRBlock block, int index, SourceVariable sv) {
-      def.definesAt(sv, block, index, _)
+      super.definesAt(sv, block, index)
     }
 
     private Ssa::DefImpl getImpl() {
@@ -1881,60 +2237,15 @@ module IteratorFlow {
     int getIndirectionIndex() { result = this.getImpl().getIndirectionIndex() }
   }
 
-  private class Phi extends TPhi, SsaDef {
-    PhiNode phi;
-
-    Phi() { this = TPhi(phi) }
-
-    final override PhiNode asPhi() { result = phi }
-
-    final override Location getLocation() { result = phi.getBasicBlock().getLocation() }
-
-    override string toString() { result = phi.toString() }
-
-    SsaIteratorNode getNode() { result.getIteratorFlowNode() = phi }
-  }
-
-  private class PhiNode extends IteratorSsa::DefinitionExt {
-    PhiNode() {
-      this instanceof IteratorSsa::PhiNode or
-      this instanceof IteratorSsa::PhiReadNode
-    }
-
-    SsaIteratorNode getNode() { result.getIteratorFlowNode() = this }
-  }
-
-  cached
-  private module IteratorSsaCached {
-    cached
-    predicate adjacentDefRead(IRBlock bb1, int i1, SourceVariable sv, IRBlock bb2, int i2) {
-      IteratorSsa::adjacentDefReadExt(_, sv, bb1, i1, bb2, i2)
-      or
-      exists(PhiNode phi |
-        IteratorSsa::lastRefRedefExt(_, sv, bb1, i1, phi) and
-        phi.definesAt(sv, bb2, i2, _)
-      )
-    }
-
-    cached
-    Node getAPriorDefinition(IteratorSsa::DefinitionExt next) {
-      exists(IRBlock bb, int i, SourceVariable sv, IteratorSsa::DefinitionExt def |
-        IteratorSsa::lastRefRedefExt(pragma[only_bind_into](def), pragma[only_bind_into](sv),
-          pragma[only_bind_into](bb), pragma[only_bind_into](i), next) and
-        nodeToDefOrUse(result, sv, bb, i, _)
-      )
-    }
-  }
-
   /** The set of nodes necessary for iterator flow. */
-  class IteratorFlowNode instanceof PhiNode {
+  class IteratorFlowNode instanceof IteratorSynthNode {
     /** Gets a textual representation of this node. */
     string toString() { result = super.toString() }
 
     /** Gets the type of this node. */
     DataFlowType getType() {
       exists(Ssa::SourceVariable sv |
-        super.definesAt(sv, _, _, _) and
+        super.getSourceVariable() = sv and
         result = sv.getType()
       )
     }
@@ -1946,60 +2257,36 @@ module IteratorFlow {
     Location getLocation() { result = super.getBasicBlock().getLocation() }
   }
 
-  private import IteratorSsaCached
-
-  private predicate defToNode(Node node, Def def, boolean uncertain) {
-    (
-      nodeHasOperand(node, def.getValue().asOperand(), def.getIndirectionIndex())
-      or
-      nodeHasInstruction(node, def.getValue().asInstruction(), def.getIndirectionIndex())
-    ) and
-    uncertain = false
+  private predicate defToNode(Node node, Def def) {
+    nodeHasOperand(node, def.getValue().asOperand(), def.getIndirectionIndex())
+    or
+    nodeHasInstruction(node, def.getValue().asInstruction(), def.getIndirectionIndex())
   }
 
-  private predicate nodeToDefOrUse(
-    Node node, SourceVariable sv, IRBlock bb, int i, boolean uncertain
-  ) {
-    exists(Def def |
-      def.hasIndexInBlock(bb, i, sv) and
-      defToNode(node, def, uncertain)
+  bindingset[result, v]
+  pragma[inline_late]
+  private DataFlowIntegrationImpl::Node fromDfNode(Node n, SourceVariable v) {
+    result = n.(SsaIteratorNode).getIteratorFlowNode()
+    or
+    exists(Ssa::UseImpl use, IRBlock bb, int i |
+      result.(DataFlowIntegrationImpl::ReadNode).readsAt(bb, i, v) and
+      use.hasIndexInBlock(bb, i, v) and
+      use.getNode() = n
     )
     or
-    useToNode(bb, i, sv, node) and
-    uncertain = false
-  }
-
-  private predicate useToNode(IRBlock bb, int i, SourceVariable sv, Node nodeTo) {
-    exists(PhiNode phi |
-      phi.definesAt(sv, bb, i, _) and
-      nodeTo = phi.getNode()
-    )
-    or
-    exists(Ssa::UseImpl use |
-      use.hasIndexInBlock(bb, i, sv) and
-      nodeTo = use.getNode()
-    )
+    defToNode(n, result.(DataFlowIntegrationImpl::SsaDefinitionNode).getDefinition())
   }
 
   /**
    * Holds if `nodeFrom` flows to `nodeTo` in a single step.
    */
   predicate localFlowStep(Node nodeFrom, Node nodeTo) {
-    exists(
-      Node nFrom, SourceVariable sv, IRBlock bb1, int i1, IRBlock bb2, int i2, boolean uncertain
-    |
-      adjacentDefRead(bb1, i1, sv, bb2, i2) and
-      nodeToDefOrUse(nFrom, sv, bb1, i1, uncertain) and
-      useToNode(bb2, i2, sv, nodeTo)
-    |
-      if uncertain = true
-      then
-        nodeFrom =
-          [
-            nFrom,
-            getAPriorDefinition(any(IteratorSsa::DefinitionExt next | next.definesAt(sv, bb1, i1, _)))
-          ]
-      else nFrom = nodeFrom
+    exists(SourceVariable v |
+      nodeFrom != nodeTo and
+      // Skip use-use steps. These are already accounted for by regular SSA
+      // flow including proper handling of `modeledFlowBarrier`.
+      DataFlowIntegrationImpl::localFlowStep(v, fromDfNode(nodeFrom, v), fromDfNode(nodeTo, v),
+        false)
     )
   }
 }

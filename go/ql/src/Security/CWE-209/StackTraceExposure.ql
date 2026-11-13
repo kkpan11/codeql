@@ -15,6 +15,7 @@
 
 import go
 import semmle.go.security.InsecureFeatureFlag::InsecureFeatureFlag
+private import semmle.go.controlflow.Guards
 
 /**
  * A flag indicating the program is in debug or development mode, or that stack
@@ -53,15 +54,13 @@ module StackTraceExposureConfig implements DataFlow::ConfigSig {
   predicate isSink(DataFlow::Node sink) { sink instanceof Http::ResponseBody }
 
   predicate isBarrier(DataFlow::Node node) {
-    // Sanitise everything controlled by an is-debug-mode check.
+    // Sanitize everything controlled by an is-debug-mode check.
     // Imprecision: I don't try to guess which arm of a branch is intended
     // to mean debug mode, and which is production mode.
-    exists(ControlFlow::ConditionGuardNode cgn |
-      cgn.ensures(any(DebugModeFlag f).getAFlag().getANode(), _)
-    |
-      cgn.dominates(node.getBasicBlock())
-    )
+    flagControls(any(DebugModeFlag f), node.getBasicBlock())
   }
+
+  predicate observeDiffInformedIncrementalMode() { any() }
 }
 
 /**

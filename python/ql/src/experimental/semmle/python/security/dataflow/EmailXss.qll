@@ -5,21 +5,20 @@
 import python
 import semmle.python.dataflow.new.DataFlow
 import semmle.python.dataflow.new.TaintTracking
-import semmle.python.dataflow.new.RemoteFlowSources
 import semmle.python.dataflow.new.BarrierGuards
 import experimental.semmle.python.Concepts
 import semmle.python.Concepts
 import semmle.python.ApiGraphs
 
 private module EmailXssConfig implements DataFlow::ConfigSig {
-  predicate isSource(DataFlow::Node source) { source instanceof RemoteFlowSource }
+  predicate isSource(DataFlow::Node source) { source instanceof ActiveThreatModelSource }
 
   predicate isSink(DataFlow::Node sink) { sink = any(EmailSender email).getHtmlBody() }
 
   predicate isBarrier(DataFlow::Node sanitizer) {
     sanitizer = any(HtmlEscaping esc).getOutput()
     or
-    sanitizer instanceof StringConstCompareBarrier
+    sanitizer instanceof ConstCompareBarrier
   }
 
   predicate isAdditionalFlowStep(DataFlow::Node nodeFrom, DataFlow::Node nodeTo) {
@@ -34,6 +33,8 @@ private module EmailXssConfig implements DataFlow::ConfigSig {
       nodeFrom = htmlContentCall.getArg(0)
     )
   }
+
+  predicate observeDiffInformedIncrementalMode() { any() }
 }
 
 /** Global taint-tracking for detecting "Email XSS" vulnerabilities. */

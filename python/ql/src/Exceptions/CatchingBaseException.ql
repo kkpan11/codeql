@@ -2,9 +2,9 @@
  * @name Except block handles 'BaseException'
  * @description Handling 'BaseException' means that system exits and keyboard interrupts may be mis-handled.
  * @kind problem
- * @tags reliability
- *       readability
- *       convention
+ * @tags quality
+ *       reliability
+ *       error-handling
  *       external/cwe/cwe-396
  * @problem.severity recommendation
  * @sub-severity high
@@ -15,7 +15,9 @@
 import python
 import semmle.python.ApiGraphs
 
-predicate doesnt_reraise(ExceptStmt ex) { ex.getAFlowNode().getBasicBlock().reachesExit() }
+predicate doesnt_reraise(ExceptStmt ex) {
+  exists(ControlFlowNode exCfg | exCfg.getNode() = ex | exCfg.getBasicBlock().reachesExit())
+}
 
 predicate catches_base_exception(ExceptStmt ex) {
   ex.getType() = API::builtin("BaseException").getAValueReachableFromSource().asExpr()

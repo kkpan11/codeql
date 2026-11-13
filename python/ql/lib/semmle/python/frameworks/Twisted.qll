@@ -182,7 +182,10 @@ private module Twisted {
     DataFlow::CfgNode
   {
     TwistedResourceRenderMethodReturn() {
-      this.asCfgNode() = any(TwistedResourceRenderMethod meth).getAReturnValueFlowNode()
+      exists(Return ret |
+        ret.getScope() = any(TwistedResourceRenderMethod meth) and
+        this.asCfgNode().getNode() = ret.getValue()
+      )
     }
 
     override DataFlow::Node getBody() { result = this }
@@ -235,9 +238,7 @@ private module Twisted {
    *
    * See https://twistedmatrix.com/documents/21.2.0/api/twisted.web.http.Request.html#addCookie
    */
-  class TwistedRequestAddCookieCall extends Http::Server::CookieWrite::Range,
-    DataFlow::MethodCallNode
-  {
+  class TwistedRequestAddCookieCall extends Http::Server::SetCookieCall, DataFlow::MethodCallNode {
     TwistedRequestAddCookieCall() { this.calls(Twisted::Request::instance(), "addCookie") }
 
     override DataFlow::Node getHeaderArg() { none() }

@@ -1,4 +1,6 @@
 /** Provides classes to reason about server-side request forgery (SSRF) attacks. */
+overlay[local?]
+module;
 
 import java
 import semmle.code.java.frameworks.Networking
@@ -11,6 +13,8 @@ import semmle.code.java.frameworks.Properties
 private import semmle.code.java.controlflow.Guards
 private import semmle.code.java.dataflow.StringPrefixes
 private import semmle.code.java.dataflow.ExternalFlow
+private import semmle.code.java.dataflow.SSA
+private import semmle.code.java.security.ConstantValueSanitizer
 private import semmle.code.java.security.Sanitizers
 
 /**
@@ -63,14 +67,17 @@ abstract class RequestForgerySanitizer extends DataFlow::Node { }
 
 private class PrimitiveSanitizer extends RequestForgerySanitizer instanceof SimpleTypeSanitizer { }
 
-private class HostnameSanitizingPrefix extends InterestingPrefix {
+/**
+ * A string constant that contains a prefix which looks like when it is prepended to untrusted
+ * input, it will restrict the host or entity addressed.
+ *
+ * For example, anything containing `?` or `#`, or a slash that doesn't appear to be a protocol
+ * specifier (e.g. `http://` is not sanitizing), or specifically the string "/".
+ */
+class HostnameSanitizingPrefix extends InterestingPrefix {
   int offset;
 
   HostnameSanitizingPrefix() {
-    // Matches strings that look like when prepended to untrusted input, they will restrict
-    // the host or entity addressed: for example, anything containing `?` or `#`, or a slash that
-    // doesn't appear to be a protocol specifier (e.g. `http://` is not sanitizing), or specifically
-    // the string "/".
     exists(this.getStringValue().regexpFind("([?#]|[^?#:/\\\\][/\\\\])|^/$", 0, offset))
   }
 
@@ -81,8 +88,10 @@ private class HostnameSanitizingPrefix extends InterestingPrefix {
  * A value that is the result of prepending a string that prevents any value from controlling the
  * host of a URL.
  */
-private class HostnameSantizer extends RequestForgerySanitizer {
-  HostnameSantizer() { this.asExpr() = any(HostnameSanitizingPrefix hsp).getAnAppendedExpression() }
+private class HostnameSanitizer extends RequestForgerySanitizer {
+  HostnameSanitizer() {
+    this.asExpr() = any(HostnameSanitizingPrefix hsp).getAnAppendedExpression()
+  }
 }
 
 /**
@@ -111,32 +120,25 @@ private class ContainsUrlSanitizer extends RequestForgerySanitizer {
   }
 }
 
-/**
- * A check that the URL is relative, and therefore safe for URL redirects.
- */
-private predicate isRelativeUrlSanitizer(Guard guard, Expr e, boolean branch) {
-  guard =
-    any(MethodCall call |
-      call.getMethod().hasQualifiedName("java.net", "URI", "isAbsolute") and
-      e = call.getQualifier() and
-      branch = false
-    )
+private class ExternalRequestForgerySanitizer extends RequestForgerySanitizer {
+  ExternalRequestForgerySanitizer() { barrierNode(this, "request-forgery") }
 }
 
-/**
- * A check that the URL is relative, and therefore safe for URL redirects.
- */
-private class RelativeUrlSanitizer extends RequestForgerySanitizer {
-  RelativeUrlSanitizer() {
-    this = DataFlow::BarrierGuard<isRelativeUrlSanitizer/3>::getABarrierNode()
-  }
+/** Gets a host read, following local assignments with a single explicit SSA definition. */
+private MethodCall getCheckedHost(Expr checked) {
+  result = checked.getUnderlyingExpr() and
+  result.getMethod().hasQualifiedName("java.net", "URI", "getHost")
+  or
+  exists(SsaExplicitWrite def |
+    checked.getUnderlyingExpr().(VarRead).getVariable() instanceof LocalScopeVariable and
+    def.getARead() = checked.getUnderlyingExpr() and
+    result = getCheckedHost(def.getValue())
+  )
 }
 
-/**
- * A comparison on the host of a url, that is a sanitizer for URL redirects.
- * E.g. `"example.org".equals(url.getHost())"`
- */
+/** Holds if a comparison validates the host of a URI. */
 private predicate isHostComparisonSanitizer(Guard guard, Expr e, boolean branch) {
+  // Direct equality checks also accept nonconstant comparison operands.
   guard =
     any(MethodCall equalsCall |
       equalsCall.getMethod().getName() = "equals" and
@@ -147,6 +149,11 @@ private predicate isHostComparisonSanitizer(Guard guard, Expr e, boolean branch)
         e = hostCall.getQualifier()
       )
     )
+  or
+  exists(Expr checked |
+    nonNullConstantValueGuardChecks(guard, checked, branch) and
+    e = getCheckedHost(checked).getQualifier()
+  )
 }
 
 /**
@@ -157,3 +164,9 @@ private class HostComparisonSanitizer extends RequestForgerySanitizer {
     this = DataFlow::BarrierGuard<isHostComparisonSanitizer/3>::getABarrierNode()
   }
 }
+
+/**
+ * A comparison with a regular expression that is a sanitizer for URL redirects.
+ */
+private class RegexpCheckRequestForgerySanitizer extends RequestForgerySanitizer instanceof RegexpCheckBarrier
+{ }

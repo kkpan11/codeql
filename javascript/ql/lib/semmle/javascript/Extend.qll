@@ -1,6 +1,8 @@
 /**
  * Provides classes for reasoning about `extend`-like functions.
  */
+overlay[local?]
+module;
 
 import javascript
 
@@ -144,6 +146,17 @@ private class ExtendCallShallow extends ExtendCall {
   override predicate isDeep() { none() }
 }
 
+/** A shallow extend call of form `mergeDescriptors(dst, src)`. */
+private class MergeDescriptorsCall extends ExtendCall {
+  MergeDescriptorsCall() { this = DataFlow::moduleImport("merge-descriptors").getACall() }
+
+  override DataFlow::Node getASourceOperand() { result = this.getArgument(1) }
+
+  override DataFlow::Node getDestinationOperand() { result = this.getArgument(0) }
+
+  override predicate isDeep() { none() }
+}
+
 /**
  * A shallow extend call of form `extend(src1, src2, ...)`.
  */
@@ -169,6 +182,7 @@ private class FunctionalExtendCallShallow extends ExtendCall {
  *
  * Since all object properties are preserved, we model this as a value-preserving step.
  */
+overlay[global]
 private class ExtendCallStep extends PreCallGraphStep {
   override predicate step(DataFlow::Node pred, DataFlow::Node succ) {
     exists(ExtendCall extend |
@@ -184,6 +198,7 @@ private import semmle.javascript.dataflow.internal.PreCallGraphStep
 /**
  * A step through a cloning library, such as `clone` or `fclone`.
  */
+overlay[global]
 private class CloneStep extends PreCallGraphStep {
   override predicate step(DataFlow::Node pred, DataFlow::Node succ) {
     exists(DataFlow::CallNode call |

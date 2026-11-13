@@ -9,7 +9,6 @@
  * @id py/polynomial-redos
  * @tags security
  *       external/cwe/cwe-1333
- *       external/cwe/cwe-730
  *       external/cwe/cwe-400
  */
 
@@ -23,7 +22,7 @@ from
 where
   PolynomialReDoSFlow::flowPath(source, sink) and
   sinkNode = sink.getNode() and
-  regexp.getRootTerm() = sinkNode.getRegExp()
+  regexp = sinkNode.getABacktrackingTerm()
 //   not (
 //     source.getNode().(Source).getKind() = "url" and
 //     regexp.isAtEndLine()

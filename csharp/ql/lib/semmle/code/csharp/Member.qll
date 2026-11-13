@@ -102,6 +102,9 @@ class Declaration extends NamedElement, @declaration {
    * implicit constructors or accessors.
    */
   predicate isCompilerGenerated() { compiler_generated(this) }
+
+  /** Holds if this declaration is in an extension type. */
+  predicate isInExtension() { this.getDeclaringType() instanceof ExtensionType }
 }
 
 /** A declaration that can have a modifier. */
@@ -235,6 +238,7 @@ class Modifiable extends Declaration, @modifiable {
 /** A declaration that is a member of a type. */
 class Member extends Modifiable, @member {
   /** Gets an access to this member. */
+  pragma[nomagic]
   MemberAccess getAnAccess() { result.getTarget() = this }
 
   /**
@@ -469,7 +473,7 @@ class Virtualizable extends Overridable, Member, @virtualizable {
 
 /**
  * A parameterizable declaration. Either a callable (`Callable`), a delegate
- * type (`DelegateType`), or an indexer (`Indexer`).
+ * type (`DelegateType`), an indexer (`Indexer`), or an extension (`ExtensionType`).
  */
 class Parameterizable extends Declaration, @parameterizable {
   /** Gets raw parameter `i`, including the `this` parameter at index 0. */
@@ -491,7 +495,7 @@ class Parameterizable extends Declaration, @parameterizable {
   final Parameter getARawParameter() { result = this.getRawParameter(_) }
 
   /**
-   * Gets the type of the parameter, possibly prefixed
+   * Gets the type of the `i`th parameter, possibly prefixed
    * with `out`, `ref`, or `params`, where appropriate.
    */
   private string parameterTypeToString(int i) {

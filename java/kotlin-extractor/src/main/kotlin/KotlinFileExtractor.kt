@@ -21,36 +21,24 @@ import org.jetbrains.kotlin.ir.UNDEFINED_OFFSET
 import org.jetbrains.kotlin.ir.backend.js.utils.realOverrideTarget
 import org.jetbrains.kotlin.ir.builders.declarations.*
 import org.jetbrains.kotlin.ir.declarations.*
-import org.jetbrains.kotlin.ir.declarations.lazy.IrLazyFunction
 import org.jetbrains.kotlin.ir.expressions.*
 import org.jetbrains.kotlin.ir.expressions.impl.*
 import org.jetbrains.kotlin.ir.symbols.*
-import org.jetbrains.kotlin.ir.types.*
+import org.jetbrains.kotlin.ir.types.classFqName
+import org.jetbrains.kotlin.ir.types.classifierOrFail
+import org.jetbrains.kotlin.ir.types.classOrNull
+import org.jetbrains.kotlin.ir.types.isAny
+import org.jetbrains.kotlin.ir.types.isNullableAny
+import org.jetbrains.kotlin.ir.types.typeOrNull
+import org.jetbrains.kotlin.ir.types.typeWith
+import org.jetbrains.kotlin.ir.types.typeWithArguments
+import org.jetbrains.kotlin.ir.types.IrSimpleType
+import org.jetbrains.kotlin.ir.types.IrStarProjection
+import org.jetbrains.kotlin.ir.types.IrType
+import org.jetbrains.kotlin.ir.types.IrTypeArgument
+import org.jetbrains.kotlin.ir.types.IrTypeProjection
 import org.jetbrains.kotlin.ir.types.impl.makeTypeProjection
-import org.jetbrains.kotlin.ir.util.companionObject
-import org.jetbrains.kotlin.ir.util.constructors
-import org.jetbrains.kotlin.ir.util.fqNameWhenAvailable
-import org.jetbrains.kotlin.ir.util.hasAnnotation
-import org.jetbrains.kotlin.ir.util.hasInterfaceParent
-import org.jetbrains.kotlin.ir.util.isAnnotationClass
-import org.jetbrains.kotlin.ir.util.isAnonymousObject
-import org.jetbrains.kotlin.ir.util.isFakeOverride
-import org.jetbrains.kotlin.ir.util.isFunctionOrKFunction
-import org.jetbrains.kotlin.ir.util.isInterface
-import org.jetbrains.kotlin.ir.util.isLocal
-import org.jetbrains.kotlin.ir.util.isNonCompanionObject
-import org.jetbrains.kotlin.ir.util.isObject
-import org.jetbrains.kotlin.ir.util.isSuspend
-import org.jetbrains.kotlin.ir.util.isSuspendFunctionOrKFunction
-import org.jetbrains.kotlin.ir.util.isVararg
-import org.jetbrains.kotlin.ir.util.kotlinFqName
-import org.jetbrains.kotlin.ir.util.packageFqName
-import org.jetbrains.kotlin.ir.util.parentAsClass
-import org.jetbrains.kotlin.ir.util.parentClassOrNull
-import org.jetbrains.kotlin.ir.util.parents
-import org.jetbrains.kotlin.ir.util.primaryConstructor
-import org.jetbrains.kotlin.ir.util.render
-import org.jetbrains.kotlin.ir.util.target
+import org.jetbrains.kotlin.ir.util.*
 import org.jetbrains.kotlin.load.java.JvmAnnotationNames
 import org.jetbrains.kotlin.load.java.NOT_NULL_ANNOTATIONS
 import org.jetbrains.kotlin.load.java.NULLABLE_ANNOTATIONS
@@ -74,6 +62,7 @@ open class KotlinFileExtractor(
     val filePath: String,
     dependencyCollector: OdasaOutput.TrapFileManager?,
     externalClassExtractor: ExternalDeclExtractor,
+    classInstanceStack: ClassInstanceStack,
     primitiveTypeMapping: PrimitiveTypeMapping,
     pluginContext: IrPluginContext,
     val declarationStack: DeclarationStack,
@@ -84,6 +73,7 @@ open class KotlinFileExtractor(
         tw,
         dependencyCollector,
         externalClassExtractor,
+        classInstanceStack,
         primitiveTypeMapping,
         pluginContext,
         globalExtensionState
@@ -183,20 +173,26 @@ open class KotlinFileExtractor(
         when (d) {
             is IrFunction ->
                 when (d.name.asString()) {
-                    "toString" -> d.valueParameters.isEmpty()
-                    "hashCode" -> d.valueParameters.isEmpty()
-                    "equals" -> d.valueParameters.singleOrNull()?.type?.isNullableAny() ?: false
+                    "toString" -> d.codeQlValueParameters.isEmpty()
+                    "hashCode" -> d.codeQlValueParameters.isEmpty()
+                    "equals" -> d.codeQlValueParameters.singleOrNull()?.type?.isNullableAny() ?: false
                     else -> false
                 } && isJavaBinaryDeclaration(d)
             else -> false
         }
 
     private fun FunctionDescriptor.tryIsHiddenToOvercomeSignatureClash(d: IrFunction): Boolean {
+        // `org.jetbrains.kotlin.ir.descriptors.IrBasedClassConstructorDescriptor.isHiddenToOvercomeSignatureClash`
+        // throws one exception or other in Kotlin 2, depending on the version.
+        // TODO: We need a replacement for this for Kotlin 2
         try {
             return this.isHiddenToOvercomeSignatureClash
         } catch (e: NotImplementedError) {
-            // `org.jetbrains.kotlin.ir.descriptors.IrBasedClassConstructorDescriptor.isHiddenToOvercomeSignatureClash` throws the exception
-            // TODO: We need a replacement for this for Kotlin 2
+            if (!usesK2) {
+                logger.warnElement("Couldn't query if element is fake, deciding it's not.", d, e)
+            }
+            return false
+        } catch (e: IllegalStateException) {
             if (!usesK2) {
                 logger.warnElement("Couldn't query if element is fake, deciding it's not.", d, e)
             }
@@ -325,7 +321,7 @@ open class KotlinFileExtractor(
             // parameter S of
             // `class Generic<T> { public <S> Generic(T t, S s) { ... } }` will have `tp.index` 1,
             // not 0).
-            tw.writeTypeVars(id, tp.name.asString(), apparentIndex, 0, parentId)
+            tw.writeTypeVars(id, tp.name.asString(), apparentIndex, parentId)
             val locId = tw.getLocation(tp)
             tw.writeHasLocation(id, locId)
 
@@ -419,6 +415,7 @@ open class KotlinFileExtractor(
 
     private fun extractClassModifiers(c: IrClass, id: Label<out DbClassorinterface>) {
         with("class modifiers", c) {
+            @Suppress("REDUNDANT_ELSE_IN_WHEN")
             when (c.modality) {
                 Modality.FINAL -> addModifiers(id, "final")
                 Modality.SEALED -> addModifiers(id, "sealed")
@@ -501,15 +498,18 @@ open class KotlinFileExtractor(
                 tw.writeIsRaw(id)
             }
 
-            val unbound = useClassSource(c)
-            tw.writeErasure(id, unbound)
             extractClassModifiers(c, id)
-            extractClassSupertypes(
-                c,
-                id,
-                if (argsIncludingOuterClasses == null) ExtractSupertypesMode.Raw
-                else ExtractSupertypesMode.Specialised(argsIncludingOuterClasses)
-            )
+            classInstanceStack.push(c)
+            try {
+                extractClassSupertypes(
+                    c,
+                    id,
+                    if (argsIncludingOuterClasses == null) ExtractSupertypesMode.Raw
+                    else ExtractSupertypesMode.Specialised(argsIncludingOuterClasses)
+                )
+            } finally {
+                classInstanceStack.pop()
+            }
 
             val locId = getLocation(c, argsIncludingOuterClasses)
             tw.writeHasLocation(id, locId)
@@ -721,7 +721,7 @@ open class KotlinFileExtractor(
             (it.type as? IrSimpleType)?.classFqName?.asString() != "kotlin.Deprecated"
         } +
             // Note we lose any arguments to @java.lang.Deprecated that were written in source.
-            IrConstructorCallImpl.fromSymbolOwner(
+            codeQlAnnotationFromSymbolOwner(
                 UNDEFINED_OFFSET,
                 UNDEFINED_OFFSET,
                 jldConstructor.returnType,
@@ -781,13 +781,13 @@ open class KotlinFileExtractor(
         val locId = tw.getLocation(constructorCall)
         tw.writeHasLocation(id, locId)
 
-        for (i in 0 until constructorCall.valueArgumentsCount) {
-            val param = constructorCall.symbol.owner.valueParameters[i]
+        for (i in 0 until constructorCall.codeQlValueArgumentsCount) {
+            val param = constructorCall.symbol.owner.codeQlValueParameters[i]
             val prop =
                 constructorCall.symbol.owner.parentAsClass.declarations
                     .filterIsInstance<IrProperty>()
                     .first { it.name == param.name }
-            val v = constructorCall.getValueArgument(i) ?: param.defaultValue?.expression
+            val v = constructorCall.codeQlGetValueArgument(i) ?: param.defaultValue?.expression
             val getter = prop.getter
             if (getter == null) {
                 logger.warnElement("Expected annotation property to define a getter", prop)
@@ -826,7 +826,7 @@ open class KotlinFileExtractor(
         fun exprId() = tw.getLabelFor<DbExpr>("@\"annotationExpr;{$parent};$idx\"")
 
         return when (v) {
-            is IrConst<*> -> {
+            is CodeQLIrConst<*> -> {
                 extractConstant(v, parent, idx, null, null, overrideId = exprId())
             }
             is IrGetEnumValue -> {
@@ -1020,7 +1020,7 @@ open class KotlinFileExtractor(
                     // here.
                     val instance = useObjectClassInstance(c)
                     val type = useSimpleTypeClass(c, emptyList(), false)
-                    tw.writeFields(instance.id, instance.name, type.javaResult.id, id, instance.id)
+                    tw.writeFields(instance.id, instance.name, type.javaResult.id, id)
                     tw.writeFieldsKotlinType(instance.id, type.kotlinResult.id)
                     tw.writeHasLocation(instance.id, locId)
                     addModifiers(instance.id, "public", "static", "final")
@@ -1115,9 +1115,9 @@ open class KotlinFileExtractor(
                         returnId,
                         0,
                         returnId,
-                        f.valueParameters.size,
+                        f.codeQlValueParameters.size,
                         { argParent, idxOffset ->
-                            f.valueParameters.forEachIndexed { idx, param ->
+                            f.codeQlValueParameters.forEachIndexed { idx, param ->
                                 val syntheticParamId = useValueParameter(param, proxyFunctionId)
                                 extractVariableAccess(
                                     syntheticParamId,
@@ -1237,8 +1237,7 @@ open class KotlinFileExtractor(
                                 instance.id,
                                 instance.name,
                                 type.javaResult.id,
-                                parentId,
-                                instance.id
+                                parentId
                             )
                             tw.writeFieldsKotlinType(instance.id, type.kotlinResult.id)
                             tw.writeHasLocation(instance.id, innerLocId)
@@ -1344,7 +1343,7 @@ open class KotlinFileExtractor(
                 extractTypeAccessRecursive(substitutedType, location, id, -1)
             }
             val syntheticParameterNames =
-                isUnderscoreParameter(vp) ||
+                vp.origin == IrDeclarationOrigin.UNDERSCORE_PARAMETER ||
                     ((vp.parent as? IrFunction)?.let { hasSynthesizedParameterNames(it) } ?: true)
             val javaParameter =
                 when (val callable = (vp.parent as? IrFunction)?.let { getJavaCallable(it) }) {
@@ -1617,7 +1616,7 @@ open class KotlinFileExtractor(
             cls.origin != IrDeclarationOrigin.IR_EXTERNAL_JAVA_DECLARATION_STUB
 
     private fun needsInterfaceForwarder(f: IrFunction) =
-        // jvmDefaultModeEnabledIsEnabled means that -Xjvm-default=all or all-compatibility was
+        // jvmDefaultModeIsNoCompatibility means that -Xjvm-default=all or =no-compatibility was
         // used, in which case real Java default interfaces are used, and we don't need to do
         // anything.
         // Otherwise, for a Kotlin-defined method inheriting a Kotlin-defined default, we need to
@@ -1627,9 +1626,7 @@ open class KotlinFileExtractor(
         // (NB. kotlinc's actual implementation strategy is different -- it makes an inner class
         // called InterfaceWithDefault$DefaultImpls and stores the default methods
         // there to allow default method usage in Java < 8, but this is hopefully niche.
-        !jvmDefaultModeEnabledIsEnabled(
-            pluginContext.languageVersionSettings
-            .getFlag(JvmAnalysisFlags.jvmDefaultMode)) &&
+        !jvmDefaultModeIsNoCompatibility(getJvmDefaultMode(pluginContext.languageVersionSettings)) &&
             f.parentClassOrNull.let {
                 it != null &&
                     it.origin != IrDeclarationOrigin.IR_EXTERNAL_JAVA_DECLARATION_STUB &&
@@ -1648,8 +1645,9 @@ open class KotlinFileExtractor(
         extractMethodAndParameterTypeAccesses: Boolean,
         typeSubstitution: TypeSubstitution?,
         classTypeArgsIncludingOuterClasses: List<IrTypeArgument>?
-    ) =
-        forceExtractFunction(
+    ) : Label<out DbCallable> {
+        val sourceLoc = tw.getLocation(f.parentClassOrNull ?: f)
+        return forceExtractFunction(
                 f,
                 parentId,
                 extractBody = false,
@@ -1659,6 +1657,7 @@ open class KotlinFileExtractor(
                 classTypeArgsIncludingOuterClasses,
                 overriddenAttributes =
                     OverriddenFunctionAttributes(
+                        sourceLoc = sourceLoc,
                         visibility = DescriptorVisibilities.PUBLIC,
                         modality = Modality.OPEN
                     )
@@ -1669,7 +1668,6 @@ open class KotlinFileExtractor(
                     CompilerGeneratedKinds.INTERFACE_FORWARDER.kind
                 )
                 if (extractBody) {
-                    val realFunctionLocId = tw.getLocation(f)
                     val inheritedDefaultFunction = f.realOverrideTarget
                     val directlyInheritedSymbol =
                         when (f) {
@@ -1689,23 +1687,23 @@ open class KotlinFileExtractor(
                         (directlyInheritedSymbol.owner.parentClassOrNull ?: return functionId)
                             .typeWith()
 
-                    extractExpressionBody(functionId, realFunctionLocId).also { returnId ->
+                    extractExpressionBody(functionId, sourceLoc).also { returnId ->
                         extractRawMethodAccess(
                             f,
-                            realFunctionLocId,
+                            sourceLoc,
                             f.returnType,
                             functionId,
                             returnId,
                             0,
                             returnId,
-                            f.valueParameters.size,
+                            f.codeQlValueParameters.size,
                             { argParentId, idxOffset ->
-                                f.valueParameters.mapIndexed { idx, param ->
+                                f.codeQlValueParameters.mapIndexed { idx, param ->
                                     val syntheticParamId = useValueParameter(param, functionId)
                                     extractVariableAccess(
                                         syntheticParamId,
                                         param.type,
-                                        realFunctionLocId,
+                                        sourceLoc,
                                         argParentId,
                                         idxOffset + idx,
                                         functionId,
@@ -1721,7 +1719,7 @@ open class KotlinFileExtractor(
                                     callId,
                                     -1,
                                     returnId,
-                                    realFunctionLocId
+                                    sourceLoc
                                 )
                             },
                             null
@@ -1729,6 +1727,7 @@ open class KotlinFileExtractor(
                     }
                 }
             }
+    }
 
     private fun extractFunction(
         f: IrFunction,
@@ -1795,7 +1794,7 @@ open class KotlinFileExtractor(
         extractBody: Boolean,
         extractMethodAndParameterTypeAccesses: Boolean
     ) {
-        if (f.valueParameters.none { it.defaultValue != null }) return
+        if (f.codeQlValueParameters.none { it.defaultValue != null }) return
 
         val id = getDefaultsMethodLabel(f)
         if (id == null) {
@@ -1803,7 +1802,7 @@ open class KotlinFileExtractor(
             return
         }
         val locId = getLocation(f, null)
-        val extReceiver = f.extensionReceiverParameter
+        val extReceiver = f.codeQlExtensionReceiverParameter
         val dispatchReceiver = if (f.shouldExtractAsStatic) null else f.dispatchReceiverParameter
         val parameterTypes = getDefaultsMethodArgTypes(f)
         val allParamTypeResults =
@@ -1872,7 +1871,7 @@ open class KotlinFileExtractor(
         tw.writeCompiler_generated(id, CompilerGeneratedKinds.DEFAULT_ARGUMENTS_METHOD.kind)
 
         if (extractBody) {
-            val nonSyntheticParams = listOfNotNull(dispatchReceiver) + f.valueParameters
+            val nonSyntheticParams = listOfNotNull(dispatchReceiver) + f.codeQlValueParameters
             // This stack entry represents as if we're extracting the 'real' function `f`, giving
             // the indices of its non-synthetic parameters
             // such that when we extract the default expressions below, any reference to f's nth
@@ -1898,12 +1897,12 @@ open class KotlinFileExtractor(
                     val realParamsVarId = getValueParameterLabel(id, parameterTypes.size - 2)
                     val intType = pluginContext.irBuiltIns.intType
                     val paramIdxOffset =
-                        listOf(dispatchReceiver, f.extensionReceiverParameter).count { it != null }
+                        listOf(dispatchReceiver, f.codeQlExtensionReceiverParameter).count { it != null }
                     extractBlockBody(id, locId).also { blockId ->
                         var nextStmt = 0
                         // For each parameter with a default, sub in the default value if the caller
                         // hasn't supplied a value:
-                        f.valueParameters.forEachIndexed { paramIdx, param ->
+                        f.codeQlValueParameters.forEachIndexed { paramIdx, param ->
                             val defaultVal = param.defaultValue
                             if (defaultVal != null) {
                                 extractIfStmt(locId, blockId, nextStmt++, id).also { ifId ->
@@ -1978,7 +1977,7 @@ open class KotlinFileExtractor(
                                     id
                                 )
                                 tw.writeHasLocation(thisCallId, locId)
-                                f.valueParameters.forEachIndexed { idx, param ->
+                                f.codeQlValueParameters.forEachIndexed { idx, param ->
                                     extractVariableAccess(
                                         tw.getLabelFor<DbParam>(getValueParameterLabel(id, idx)),
                                         param.type,
@@ -2006,9 +2005,9 @@ open class KotlinFileExtractor(
                                     )
                                     .also { thisCallId ->
                                         val realFnIdxOffset =
-                                            if (f.extensionReceiverParameter != null) 1 else 0
+                                            if (f.codeQlExtensionReceiverParameter != null) 1 else 0
                                         val paramMappings =
-                                            f.valueParameters.mapIndexed { idx, param ->
+                                            f.codeQlValueParameters.mapIndexed { idx, param ->
                                                 Triple(
                                                     param.type,
                                                     idx + paramIdxOffset,
@@ -2159,7 +2158,7 @@ open class KotlinFileExtractor(
                         val dispatchReceiver =
                             f.dispatchReceiverParameter?.let { IrGetValueImpl(-1, -1, it.symbol) }
                         val extensionReceiver =
-                            f.extensionReceiverParameter?.let { IrGetValueImpl(-1, -1, it.symbol) }
+                            f.codeQlExtensionReceiverParameter?.let { IrGetValueImpl(-1, -1, it.symbol) }
 
                         extractExpressionBody(overloadId, realFunctionLocId).also { returnId ->
                             extractsDefaultsCall(
@@ -2183,28 +2182,28 @@ open class KotlinFileExtractor(
         if (!f.hasAnnotation(jvmOverloadsFqName)) {
             if (
                 f is IrConstructor &&
-                    f.valueParameters.isNotEmpty() &&
-                    f.valueParameters.all { it.defaultValue != null } &&
+                    f.codeQlValueParameters.isNotEmpty() &&
+                    f.codeQlValueParameters.all { it.defaultValue != null } &&
                     f.parentClassOrNull?.let {
                         // Don't create a default constructor for an annotation class, or a class
                         // that explicitly declares a no-arg constructor.
                         !it.isAnnotationClass &&
                             it.declarations.none { d ->
-                                d is IrConstructor && d.valueParameters.isEmpty()
+                                d is IrConstructor && d.codeQlValueParameters.isEmpty()
                             }
                     } == true
             ) {
                 // Per https://kotlinlang.org/docs/classes.html#creating-instances-of-classes, a
                 // single default overload gets created specifically
                 // when we have all default parameters, regardless of `@JvmOverloads`.
-                extractGeneratedOverload(f.valueParameters.map { _ -> null })
+                extractGeneratedOverload(f.codeQlValueParameters.map { _ -> null })
             }
             return
         }
 
-        val paramList: MutableList<IrValueParameter?> = f.valueParameters.toMutableList()
-        for (n in (f.valueParameters.size - 1) downTo 0) {
-            if (f.valueParameters[n].defaultValue != null) {
+        val paramList: MutableList<IrValueParameter?> = f.codeQlValueParameters.toMutableList()
+        for (n in (f.codeQlValueParameters.size - 1) downTo 0) {
+            if (f.codeQlValueParameters[n].defaultValue != null) {
                 paramList[n] = null // Remove this parameter, to be replaced by a default value
                 extractGeneratedOverload(paramList)
             }
@@ -2313,7 +2312,7 @@ open class KotlinFileExtractor(
             // synthesised and inherit the annotation from the delegate (which given it has
             // @NotNull, is likely written in Java)
             JvmAnnotationNames.JETBRAINS_NOT_NULL_ANNOTATION.takeUnless {
-                t.isNullable() ||
+                t.isNullableCodeQL() ||
                     primitiveTypeMapping.getPrimitiveInfo(t) != null ||
                     hasExistingAnnotation(it)
             }
@@ -2330,7 +2329,7 @@ open class KotlinFileExtractor(
             getClassByFqName(pluginContext, it)?.let { annotationClass ->
                 annotationClass.owner.declarations.firstIsInstanceOrNull<IrConstructor>()?.let {
                     annotationConstructor ->
-                    IrConstructorCallImpl.fromSymbolOwner(
+                    codeQlAnnotationFromSymbolOwner(
                         UNDEFINED_OFFSET,
                         UNDEFINED_OFFSET,
                         annotationConstructor.returnType,
@@ -2391,13 +2390,13 @@ open class KotlinFileExtractor(
                             id
                         }
 
-                val extReceiver = f.extensionReceiverParameter
+                val extReceiver = f.codeQlExtensionReceiverParameter
                 // The following parameter order is correct, because member $default methods (where
                 // the order would be [dispatchParam], [extensionParam], normalParams) are not
                 // extracted here
                 val fParameters =
                     listOfNotNull(extReceiver) +
-                        (overriddenAttributes?.valueParameters ?: f.valueParameters)
+                        (overriddenAttributes?.valueParameters ?: f.codeQlValueParameters)
                 val paramTypes =
                     fParameters.mapIndexed { i, vp ->
                         extractValueParameter(
@@ -2600,7 +2599,7 @@ open class KotlinFileExtractor(
         isStatic: Boolean
     ): Label<out DbField> {
         val t = useType(type)
-        tw.writeFields(id, name, t.javaResult.id, parentId, id)
+        tw.writeFields(id, name, t.javaResult.id, parentId)
         tw.writeFieldsKotlinType(id, t.kotlinResult.id)
         tw.writeHasLocation(id, locId)
 
@@ -2757,7 +2756,7 @@ open class KotlinFileExtractor(
             DeclarationStackAdjuster(ee).use {
                 val id = useEnumEntry(ee)
                 val type = getEnumEntryType(ee) ?: return
-                tw.writeFields(id, ee.name.asString(), type.javaResult.id, parentId, id)
+                tw.writeFields(id, ee.name.asString(), type.javaResult.id, parentId)
                 tw.writeFieldsKotlinType(id, type.kotlinResult.id)
                 val locId = tw.getLocation(ee)
                 tw.writeHasLocation(id, locId)
@@ -2805,6 +2804,7 @@ open class KotlinFileExtractor(
 
     private fun extractBody(b: IrBody, callable: Label<out DbCallable>) {
         with("body", b) {
+            @Suppress("REDUNDANT_ELSE_IN_WHEN")
             when (b) {
                 is IrBlockBody -> extractBlockBody(b, callable)
                 is IrSyntheticBody -> extractSyntheticBody(b, callable)
@@ -2838,7 +2838,7 @@ open class KotlinFileExtractor(
             when {
                 kind == IrSyntheticBodyKind.ENUM_VALUES -> tw.writeKtSyntheticBody(callable, 1)
                 kind == IrSyntheticBodyKind.ENUM_VALUEOF -> tw.writeKtSyntheticBody(callable, 2)
-                kind == kind_ENUM_ENTRIES -> tw.writeKtSyntheticBody(callable, 3)
+                kind == IrSyntheticBodyKind.ENUM_ENTRIES -> tw.writeKtSyntheticBody(callable, 3)
                 else -> {
                     logger.errorElement("Unhandled synthetic body kind " + kind, b)
                 }
@@ -2977,13 +2977,22 @@ open class KotlinFileExtractor(
                     val locId = tw.getLocation(s)
                     tw.writeStmts_block(blockId, parent, idx, callable)
                     tw.writeHasLocation(blockId, locId)
-                    extractVariable(s.delegate, callable, blockId, 0)
-
+                    // For Kotlin < 2.3, s.delegate is not-nullable, but for Kotlin >= 2.3
+                    // it is nullable. Cast to nullable to handle both cases uniformly.
+                    // For Kotlin >= 2.3, the cast is redundant, hence the suppress.
+                    @Suppress("USELESS_CAST")
+                    val delegate: IrVariable? = s.delegate as IrVariable?
                     val propId = tw.getFreshIdLabel<DbKt_property>()
-                    tw.writeKtProperties(propId, s.name.asString())
-                    tw.writeHasLocation(propId, locId)
-                    tw.writeKtPropertyDelegates(propId, useVariable(s.delegate))
 
+                    if (delegate == null) {
+                        // This is not expected to happen, as the plugin hooks into the pipeline before IR lowering.
+                        logger.errorElement("Local delegated property is missing delegate", s)
+                    } else {
+                        extractVariable(delegate, callable, blockId, 0)
+                        tw.writeKtProperties(propId, s.name.asString())
+                        tw.writeHasLocation(propId, locId)
+                        tw.writeKtPropertyDelegates(propId, useVariable(delegate))
+                    }
                     // Getter:
                     extractStatement(s.getter, callable, blockId, 1)
                     val getterLabel = getLocallyVisibleFunctionLabels(s.getter).function
@@ -3062,14 +3071,14 @@ open class KotlinFileExtractor(
             logger.errorElement("Unexpected dispatch receiver found", c)
         }
 
-        if (c.valueArgumentsCount < 1) {
+        if (c.codeQlValueArgumentsCount < 1) {
             logger.errorElement("No arguments found", c)
             return
         }
 
         extractArgument(id, c, callable, enclosingStmt, 0, "Operand null")
 
-        if (c.valueArgumentsCount > 1) {
+        if (c.codeQlValueArgumentsCount > 1) {
             logger.errorElement("Extra arguments found", c)
         }
     }
@@ -3088,21 +3097,21 @@ open class KotlinFileExtractor(
             logger.errorElement("Unexpected dispatch receiver found", c)
         }
 
-        if (c.valueArgumentsCount < 1) {
+        if (c.codeQlValueArgumentsCount < 1) {
             logger.errorElement("No arguments found", c)
             return
         }
 
         extractArgument(id, c, callable, enclosingStmt, 0, "LHS null")
 
-        if (c.valueArgumentsCount < 2) {
+        if (c.codeQlValueArgumentsCount < 2) {
             logger.errorElement("No RHS found", c)
             return
         }
 
         extractArgument(id, c, callable, enclosingStmt, 1, "RHS null")
 
-        if (c.valueArgumentsCount > 2) {
+        if (c.codeQlValueArgumentsCount > 2) {
             logger.errorElement("Extra arguments found", c)
         }
     }
@@ -3115,7 +3124,7 @@ open class KotlinFileExtractor(
         idx: Int,
         msg: String
     ) {
-        val op = c.getValueArgument(idx)
+        val op = c.codeQlGetValueArgument(idx)
         if (op == null) {
             logger.errorElement(msg, c)
         } else {
@@ -3260,8 +3269,8 @@ open class KotlinFileExtractor(
         // and which should be replaced by defaults. The final Object parameter is apparently always
         // null.
         (listOfNotNull(if (f.shouldExtractAsStatic) null else f.dispatchReceiverParameter?.type) +
-                listOfNotNull(f.extensionReceiverParameter?.type) +
-                f.valueParameters.map { it.type } +
+                listOfNotNull(f.codeQlExtensionReceiverParameter?.type) +
+                f.codeQlValueParameters.map { it.type } +
                 listOf(pluginContext.irBuiltIns.intType, getDefaultsMethodLastArgType(f)))
             .map { erase(it) }
 
@@ -3336,9 +3345,9 @@ open class KotlinFileExtractor(
         // that specified the default values, which will in turn dynamically dispatch back to the
         // relevant override.
         val overriddenCallTarget =
-            (callTarget as? IrSimpleFunction)?.allOverriddenIncludingSelf()?.firstOrNull {
+            (callTarget as? IrSimpleFunction)?.allOverridden(includeSelf = true)?.firstOrNull {
                 it.overriddenSymbols.isEmpty() &&
-                    it.valueParameters.any { p -> p.defaultValue != null }
+                    it.codeQlValueParameters.any { p -> p.defaultValue != null }
             } ?: callTarget
         if (isExternalDeclaration(overriddenCallTarget)) {
             // Likewise, ensure the overridden target gets extracted.
@@ -3412,7 +3421,7 @@ open class KotlinFileExtractor(
         }
 
         val valueArgsWithDummies =
-            valueArguments.zip(callTarget.valueParameters).map { (expr, param) ->
+            valueArguments.zip(callTarget.codeQlValueParameters).map { (expr, param) ->
                 expr ?: IrConstImpl.defaultValueForType(0, 0, param.type)
             }
 
@@ -3522,7 +3531,7 @@ open class KotlinFileExtractor(
         callTarget: IrFunction,
         valueArguments: List<IrExpression?>
     ): Boolean {
-        val varargParam = callTarget.valueParameters.withIndex().find { it.value.isVararg }
+        val varargParam = callTarget.codeQlValueParameters.withIndex().find { it.value.isVararg }
         // If the vararg param is the only one not specified, and it has no default value, then we
         // don't need to call a $default method,
         // as omitting it already implies passing an empty vararg array.
@@ -3798,7 +3807,7 @@ open class KotlinFileExtractor(
     ) =
         extractCallValueArguments(
             callId,
-            (0 until call.valueArgumentsCount).map { call.getValueArgument(it) },
+            (0 until call.codeQlValueArgumentsCount).map { call.codeQlGetValueArgument(it) },
             enclosingStmt,
             enclosingCallable,
             idxOffset
@@ -3867,7 +3876,7 @@ open class KotlinFileExtractor(
                     (owner.parentClassOrNull?.fqNameWhenAvailable?.asString() == type ||
                         (owner.parent is IrExternalPackageFragment &&
                             getFileClassFqName(owner)?.asString() == type)) &&
-                        owner.valueParameters
+                        owner.codeQlValueParameters
                             .map { it.type.classFqName?.asString() }
                             .toTypedArray() contentEquals parameterTypes
                 }
@@ -3896,7 +3905,14 @@ open class KotlinFileExtractor(
 
         val prop =
             getPropertiesByFqName(pluginContext, propertyPkg, propertyName)
-                .firstOrNull { it.owner.parentClassOrNull?.fqNameWhenAvailable?.asString() == type }
+                .firstOrNull {
+                    val owner = it.owner
+                    when (val parent = owner.parent) {
+                        is IrClass -> parent.fqNameWhenAvailable?.asString()
+                        is IrExternalPackageFragment -> getFileClassFqName(owner)?.asString()
+                        else -> null
+                    } == type
+                }
                 ?.owner
 
         if (prop != null) {
@@ -3919,8 +3935,8 @@ open class KotlinFileExtractor(
         val result =
             javaLangString?.declarations?.findSubType<IrFunction> {
                 it.name.asString() == "valueOf" &&
-                    it.valueParameters.size == 1 &&
-                    it.valueParameters[0].type == pluginContext.irBuiltIns.anyNType
+                    it.codeQlValueParameters.size == 1 &&
+                    it.codeQlValueParameters[0].type == pluginContext.irBuiltIns.anyNType
             }
         if (result == null) {
             logger.error("Couldn't find declaration java.lang.String.valueOf(Object)")
@@ -3944,7 +3960,7 @@ open class KotlinFileExtractor(
     val kotlinNoWhenBranchMatchedConstructor by lazy {
         val result =
             kotlinNoWhenBranchMatchedExn?.declarations?.findSubType<IrConstructor> {
-                it.valueParameters.isEmpty()
+                it.codeQlValueParameters.isEmpty()
             }
         if (result == null) {
             logger.error("Couldn't find no-arg constructor for kotlin.NoWhenBranchMatchedException")
@@ -3983,7 +3999,7 @@ open class KotlinFileExtractor(
             verboseln("No match as function name is ${target.name.asString()} not $fName")
             return false
         }
-        val extensionReceiverParameter = target.extensionReceiverParameter
+        val extensionReceiverParameter = target.codeQlExtensionReceiverParameter
         val targetClass =
             if (extensionReceiverParameter == null) {
                 if (isNullable == true) {
@@ -3995,7 +4011,7 @@ open class KotlinFileExtractor(
                 target.parent
             } else {
                 val st = extensionReceiverParameter.type as? IrSimpleType
-                if (isNullable != null && st?.isNullable() != isNullable) {
+                if (isNullable != null && st?.isNullableCodeQL() != isNullable) {
                     verboseln("Nullablility of type didn't match")
                     return false
                 }
@@ -4091,8 +4107,8 @@ open class KotlinFileExtractor(
             ) {
                 val typeArgs =
                     if (extractMethodTypeArguments)
-                        (0 until c.typeArgumentsCount)
-                            .map { c.getTypeArgument(it) }
+                        (0 until c.codeQlTypeArgumentsCount)
+                            .map { c.codeQlGetTypeArgument(it) }
                             .requireNoNullsOrNull()
                     else listOf()
 
@@ -4109,9 +4125,9 @@ open class KotlinFileExtractor(
                     parent,
                     idx,
                     enclosingStmt,
-                    (0 until c.valueArgumentsCount).map { c.getValueArgument(it) },
+                    (0 until c.codeQlValueArgumentsCount).map { c.codeQlGetValueArgument(it) },
                     c.dispatchReceiver,
-                    c.extensionReceiver,
+                    c.codeQlExtensionReceiver,
                     typeArgs,
                     extractClassTypeArguments,
                     c.superQualifierSymbol
@@ -4119,12 +4135,12 @@ open class KotlinFileExtractor(
             }
 
             fun extractSpecialEnumFunction(fnName: String) {
-                if (c.typeArgumentsCount != 1) {
+                if (c.codeQlTypeArgumentsCount != 1) {
                     logger.errorElement("Expected to find exactly one type argument", c)
                     return
                 }
 
-                val enumType = (c.getTypeArgument(0) as? IrSimpleType)?.classifier?.owner
+                val enumType = (c.codeQlGetTypeArgument(0) as? IrSimpleType)?.classifier?.owner
                 if (enumType == null) {
                     logger.errorElement("Couldn't find type of enum type", c)
                     return
@@ -4171,13 +4187,13 @@ open class KotlinFileExtractor(
                 } else {
                     extractExpressionExpr(receiver, callable, id, 0, enclosingStmt)
                 }
-                if (c.valueArgumentsCount < 1) {
+                if (c.codeQlValueArgumentsCount < 1) {
                     logger.errorElement("No RHS found", c)
                 } else {
-                    if (c.valueArgumentsCount > 1) {
+                    if (c.codeQlValueArgumentsCount > 1) {
                         logger.errorElement("Extra arguments found", c)
                     }
-                    val arg = c.getValueArgument(0)
+                    val arg = c.codeQlGetValueArgument(0)
                     if (arg == null) {
                         logger.errorElement("RHS null", c)
                     } else {
@@ -4198,7 +4214,7 @@ open class KotlinFileExtractor(
                 } else {
                     extractExpressionExpr(receiver, callable, id, 0, enclosingStmt)
                 }
-                if (c.valueArgumentsCount > 0) {
+                if (c.codeQlValueArgumentsCount > 0) {
                     logger.errorElement("Extra arguments found", c)
                 }
             }
@@ -4212,7 +4228,7 @@ open class KotlinFileExtractor(
             }
 
             fun binopExt(id: Label<out DbExpr>) {
-                binopReceiver(id, c.extensionReceiver, "Extension receiver")
+                binopReceiver(id, c.codeQlExtensionReceiver, "Extension receiver")
             }
 
             fun unaryopDisp(id: Label<out DbExpr>) {
@@ -4220,7 +4236,7 @@ open class KotlinFileExtractor(
             }
 
             fun unaryopExt(id: Label<out DbExpr>) {
-                unaryopReceiver(id, c.extensionReceiver, "Extension receiver")
+                unaryopReceiver(id, c.codeQlExtensionReceiver, "Extension receiver")
             }
 
             val dr = c.dispatchReceiver
@@ -4242,7 +4258,7 @@ open class KotlinFileExtractor(
                             parent,
                             idx,
                             enclosingStmt,
-                            listOf(c.extensionReceiver, c.getValueArgument(0)),
+                            listOf(c.codeQlExtensionReceiver, c.codeQlGetValueArgument(0)),
                             null,
                             null
                         )
@@ -4343,7 +4359,7 @@ open class KotlinFileExtractor(
                 // != gets desugared into not and ==. Here we resugar it.
                 c.origin == IrStatementOrigin.EXCLEQ &&
                     isFunction(target, "kotlin", "Boolean", "not") &&
-                    c.valueArgumentsCount == 0 &&
+                    c.codeQlValueArgumentsCount == 0 &&
                     dr != null &&
                     dr is IrCall &&
                     isBuiltinCallInternal(dr, "EQEQ") -> {
@@ -4355,7 +4371,7 @@ open class KotlinFileExtractor(
                 }
                 c.origin == IrStatementOrigin.EXCLEQEQ &&
                     isFunction(target, "kotlin", "Boolean", "not") &&
-                    c.valueArgumentsCount == 0 &&
+                    c.codeQlValueArgumentsCount == 0 &&
                     dr != null &&
                     dr is IrCall &&
                     isBuiltinCallInternal(dr, "EQEQEQ") -> {
@@ -4367,7 +4383,7 @@ open class KotlinFileExtractor(
                 }
                 c.origin == IrStatementOrigin.EXCLEQ &&
                     isFunction(target, "kotlin", "Boolean", "not") &&
-                    c.valueArgumentsCount == 0 &&
+                    c.codeQlValueArgumentsCount == 0 &&
                     dr != null &&
                     dr is IrCall &&
                     isBuiltinCallInternal(dr, "ieee754equals") -> {
@@ -4569,7 +4585,7 @@ open class KotlinFileExtractor(
                             parent,
                             idx,
                             enclosingStmt,
-                            listOf(c.extensionReceiver),
+                            listOf(c.codeQlExtensionReceiver),
                             null,
                             null
                         )
@@ -4589,8 +4605,8 @@ open class KotlinFileExtractor(
                     val locId = tw.getLocation(c)
                     extractExprContext(id, locId, callable, enclosingStmt)
 
-                    if (c.typeArgumentsCount == 1) {
-                        val typeArgument = c.getTypeArgument(0)
+                    if (c.codeQlTypeArgumentsCount == 1) {
+                        val typeArgument = c.codeQlGetTypeArgument(0)
                         if (typeArgument == null) {
                             logger.errorElement("Type argument missing in an arrayOfNulls call", c)
                         } else {
@@ -4611,8 +4627,8 @@ open class KotlinFileExtractor(
                         )
                     }
 
-                    if (c.valueArgumentsCount == 1) {
-                        val dim = c.getValueArgument(0)
+                    if (c.codeQlValueArgumentsCount == 1) {
+                        val dim = c.codeQlGetValueArgument(0)
                         if (dim != null) {
                             extractExpressionExpr(dim, callable, id, 0, enclosingStmt)
                         } else {
@@ -4641,11 +4657,11 @@ open class KotlinFileExtractor(
                     val isPrimitiveArrayCreation = !isBuiltinCallKotlin(c, "arrayOf")
                     val elementType =
                         if (isPrimitiveArrayCreation) {
-                            c.type.getArrayElementType(pluginContext.irBuiltIns)
+                            c.type.getArrayElementTypeCodeQL(pluginContext.irBuiltIns)
                         } else {
-                            // TODO: is there any reason not to always use getArrayElementType?
-                            if (c.typeArgumentsCount == 1) {
-                                c.getTypeArgument(0).also {
+                            // TODO: is there any reason not to always use getArrayElementTypeCodeQL?
+                            if (c.codeQlTypeArgumentsCount == 1) {
+                                c.codeQlGetTypeArgument(0).also {
                                     if (it == null) {
                                         logger.errorElement(
                                             "Type argument missing in an arrayOf call",
@@ -4663,7 +4679,7 @@ open class KotlinFileExtractor(
                         }
 
                     val arg =
-                        if (c.valueArgumentsCount == 1) c.getValueArgument(0)
+                        if (c.codeQlValueArgumentsCount == 1) c.codeQlGetValueArgument(0)
                             else {
                                 logger.errorElement(
                                     "Expected to find only one (vararg) argument in ${c.symbol.owner.name.asString()} call",
@@ -4712,7 +4728,7 @@ open class KotlinFileExtractor(
                                 return
                             }
 
-                            val ext = c.extensionReceiver
+                            val ext = c.codeQlExtensionReceiver
                             if (ext == null) {
                                 logger.errorElement(
                                     "No extension receiver found for `KClass::java` call",
@@ -4819,8 +4835,8 @@ open class KotlinFileExtractor(
                     c.origin == IrStatementOrigin.EQ &&
                     c.dispatchReceiver != null -> {
                     val array = c.dispatchReceiver
-                    val arrayIdx = c.getValueArgument(0)
-                    val assignedValue = c.getValueArgument(1)
+                    val arrayIdx = c.codeQlGetValueArgument(0)
+                    val assignedValue = c.codeQlGetValueArgument(1)
 
                     if (array != null && arrayIdx != null && assignedValue != null) {
 
@@ -4875,22 +4891,22 @@ open class KotlinFileExtractor(
                 }
                 isBuiltinCall(c, "<unsafe-coerce>", "kotlin.jvm.internal") -> {
 
-                    if (c.valueArgumentsCount != 1) {
+                    if (c.codeQlValueArgumentsCount != 1) {
                         logger.errorElement(
-                            "Expected to find one argument for a kotlin.jvm.internal.<unsafe-coerce>() call, but found ${c.valueArgumentsCount}",
+                            "Expected to find one argument for a kotlin.jvm.internal.<unsafe-coerce>() call, but found ${c.codeQlValueArgumentsCount}",
                             c
                         )
                         return
                     }
 
-                    if (c.typeArgumentsCount != 2) {
+                    if (c.codeQlTypeArgumentsCount != 2) {
                         logger.errorElement(
-                            "Expected to find two type arguments for a kotlin.jvm.internal.<unsafe-coerce>() call, but found ${c.typeArgumentsCount}",
+                            "Expected to find two type arguments for a kotlin.jvm.internal.<unsafe-coerce>() call, but found ${c.codeQlTypeArgumentsCount}",
                             c
                         )
                         return
                     }
-                    val valueArg = c.getValueArgument(0)
+                    val valueArg = c.codeQlGetValueArgument(0)
                     if (valueArg == null) {
                         logger.errorElement(
                             "Cannot find value argument for a kotlin.jvm.internal.<unsafe-coerce>() call",
@@ -4898,7 +4914,7 @@ open class KotlinFileExtractor(
                         )
                         return
                     }
-                    val typeArg = c.getTypeArgument(1)
+                    val typeArg = c.codeQlGetTypeArgument(1)
                     if (typeArg == null) {
                         logger.errorElement(
                             "Cannot find type argument for a kotlin.jvm.internal.<unsafe-coerce>() call",
@@ -4917,7 +4933,7 @@ open class KotlinFileExtractor(
                     extractExpressionExpr(valueArg, callable, id, 1, enclosingStmt)
                 }
                 isBuiltinCallInternal(c, "dataClassArrayMemberToString") -> {
-                    val arrayArg = c.getValueArgument(0)
+                    val arrayArg = c.codeQlGetValueArgument(0)
                     val realArrayClass = arrayArg?.type?.classOrNull
                     if (realArrayClass == null) {
                         logger.errorElement(
@@ -4929,8 +4945,8 @@ open class KotlinFileExtractor(
                     val realCallee =
                         javaUtilArrays?.declarations?.findSubType<IrFunction> { decl ->
                             decl.name.asString() == "toString" &&
-                                decl.valueParameters.size == 1 &&
-                                decl.valueParameters[0].type.classOrNull?.let {
+                                decl.codeQlValueParameters.size == 1 &&
+                                decl.codeQlValueParameters[0].type.classOrNull?.let {
                                     it == realArrayClass
                                 } == true
                         }
@@ -4955,7 +4971,7 @@ open class KotlinFileExtractor(
                     }
                 }
                 isBuiltinCallInternal(c, "dataClassArrayMemberHashCode") -> {
-                    val arrayArg = c.getValueArgument(0)
+                    val arrayArg = c.codeQlGetValueArgument(0)
                     val realArrayClass = arrayArg?.type?.classOrNull
                     if (realArrayClass == null) {
                         logger.errorElement(
@@ -4967,8 +4983,8 @@ open class KotlinFileExtractor(
                     val realCallee =
                         javaUtilArrays?.declarations?.findSubType<IrFunction> { decl ->
                             decl.name.asString() == "hashCode" &&
-                                decl.valueParameters.size == 1 &&
-                                decl.valueParameters[0].type.classOrNull?.let {
+                                decl.codeQlValueParameters.size == 1 &&
+                                decl.codeQlValueParameters[0].type.classOrNull?.let {
                                     it == realArrayClass
                                 } == true
                         }
@@ -5148,7 +5164,7 @@ open class KotlinFileExtractor(
         val type = useType(eType)
         val isAnonymous = eType.isAnonymous
         val locId = tw.getLocation(e)
-        val valueArgs = (0 until e.valueArgumentsCount).map { e.getValueArgument(it) }
+        val valueArgs = (0 until e.codeQlValueArgumentsCount).map { e.codeQlGetValueArgument(it) }
 
         val id =
             if (
@@ -5204,10 +5220,10 @@ open class KotlinFileExtractor(
                         realCallTarget is IrConstructor &&
                         realCallTarget.parentClassOrNull?.fqNameWhenAvailable?.asString() ==
                             "kotlin.Enum" &&
-                        realCallTarget.valueParameters.size == 2 &&
-                        realCallTarget.valueParameters[0].type ==
+                        realCallTarget.codeQlValueParameters.size == 2 &&
+                        realCallTarget.codeQlValueParameters[0].type ==
                             pluginContext.irBuiltIns.stringType &&
-                        realCallTarget.valueParameters[1].type == pluginContext.irBuiltIns.intType
+                        realCallTarget.codeQlValueParameters[1].type == pluginContext.irBuiltIns.intType
                 ) {
 
                     val id0 =
@@ -5280,7 +5296,7 @@ open class KotlinFileExtractor(
             }
 
             val args =
-                (0 until e.typeArgumentsCount).map { e.getTypeArgument(it) }.requireNoNullsOrNull()
+                (0 until e.codeQlTypeArgumentsCount).map { e.codeQlGetTypeArgument(it) }.requireNoNullsOrNull()
             if (args == null) {
                 logger.warnElement("Found null type argument in enum constructor call", e)
                 return
@@ -5358,7 +5374,7 @@ open class KotlinFileExtractor(
                 // Check for an expression like x = get(x).op(e):
                 val opReceiver = updateRhs.dispatchReceiver
                 if (isExpectedLhs(opReceiver)) {
-                    updateRhs.getValueArgument(0)
+                    updateRhs.codeQlGetValueArgument(0)
                 } else null
             } else null
         }
@@ -5553,7 +5569,7 @@ open class KotlinFileExtractor(
                                     "set"
                                 )
                             ) {
-                                val updateRhs0 = arraySetCall.getValueArgument(1)
+                                val updateRhs0 = arraySetCall.codeQlGetValueArgument(1)
                                 if (updateRhs0 == null) {
                                     logger.errorElement("Update RHS not found", e)
                                     return false
@@ -5765,7 +5781,14 @@ open class KotlinFileExtractor(
     ) =
         exprIdOrFresh<DbNullliteral>(overrideId).also {
             val type = useType(t)
-            tw.writeExprs_nullliteral(it, type.javaResult.id, parent, idx)
+            // Match Java by using a special <nulltype> for nulls, rather than Kotlin's view of this which is
+            // kotlin.Nothing?, the type that can only contain null.
+            val nullTypeName = "<nulltype>"
+            val javaNullType = tw.getLabelFor<DbPrimitive>(
+                "@\"type;$nullTypeName\"",
+                { tw.writePrimitives(it, nullTypeName) }
+            )
+            tw.writeExprs_nullliteral(it, javaNullType, parent, idx)
             tw.writeExprsKotlinType(it, type.kotlinResult.id)
             extractExprContext(it, locId, callable, enclosingStmt)
         }
@@ -5999,7 +6022,7 @@ open class KotlinFileExtractor(
                         extractExpressionExpr(a, callable, id, i, exprParent.enclosingStmt)
                     }
                 }
-                is IrConst<*> -> {
+                is CodeQLIrConst<*> -> {
                     val exprParent = parent.expr(e, callable)
                     extractConstant(
                         e,
@@ -6012,11 +6035,7 @@ open class KotlinFileExtractor(
                 is IrGetValue -> {
                     val exprParent = parent.expr(e, callable)
                     val owner = e.symbol.owner
-                    if (
-                        owner is IrValueParameter &&
-                            owner.index == -1 &&
-                            !owner.isExtensionReceiver()
-                    ) {
+                    if (owner is IrValueParameter && isDispatchReceiver(owner)) {
                         extractThisAccess(e, owner.parent, exprParent, callable)
                     } else {
                         val isAnnotationClassParameter =
@@ -6211,9 +6230,9 @@ open class KotlinFileExtractor(
                     if (
                         (isAndAnd || isOrOr) &&
                             e.branches.size == 2 &&
-                            (e.branches[1].condition as? IrConst<*>)?.value == true &&
+                            (e.branches[1].condition as? CodeQLIrConst<*>)?.value == true &&
                             (e.branches[if (e.origin == IrStatementOrigin.ANDAND) 1 else 0].result
-                                    as? IrConst<*>)
+                                    as? CodeQLIrConst<*>)
                                 ?.value == isOrOr
                     ) {
 
@@ -6393,12 +6412,12 @@ open class KotlinFileExtractor(
                     val ids = getLocallyVisibleFunctionLabels(e.function)
                     val locId = tw.getLocation(e)
 
-                    val ext = e.function.extensionReceiverParameter
+                    val ext = e.function.codeQlExtensionReceiverParameter
                     val parameters =
                         if (ext != null) {
-                            listOf(ext) + e.function.valueParameters
+                            listOf(ext) + e.function.codeQlValueParameters
                         } else {
-                            e.function.valueParameters
+                            e.function.codeQlValueParameters
                         }
 
                     var types = parameters.map { it.type }
@@ -6660,7 +6679,7 @@ open class KotlinFileExtractor(
                 is IrFunction -> {
                     if (
                         ownerParent.dispatchReceiverParameter == owner &&
-                            ownerParent.extensionReceiverParameter != null
+                            ownerParent.codeQlExtensionReceiverParameter != null
                     ) {
 
                         val ownerParent2 = ownerParent.parent
@@ -6869,7 +6888,7 @@ open class KotlinFileExtractor(
         }
 
     private fun extractConstant(
-        e: IrConst<*>,
+        e: CodeQLIrConst<*>,
         parent: Label<out DbExprparent>,
         idx: Int,
         enclosingCallable: Label<out DbCallable>?,
@@ -6947,7 +6966,7 @@ open class KotlinFileExtractor(
                     tw.writeExprs_stringliteral(id, type.javaResult.id, parent, idx)
                     tw.writeExprsKotlinType(id, type.kotlinResult.id)
                     extractExprContext(id, locId, enclosingCallable, enclosingStmt)
-                    tw.writeNamestrings(toQuotedLiteral(v.toString()), v.toString(), id)
+                    tw.writeNamestrings(toQuotedLiteral(v), v, id)
                 }
             }
             v == null -> {
@@ -6965,11 +6984,6 @@ open class KotlinFileExtractor(
                 null.also { logger.errorElement("Unrecognised IrConst: " + v.javaClass, e) }
             }
         }
-    }
-
-    private fun IrValueParameter.isExtensionReceiver(): Boolean {
-        val parentFun = parent as? IrFunction ?: return false
-        return parentFun.extensionReceiverParameter == this
     }
 
     private open inner class GeneratedClassHelper(
@@ -7084,7 +7098,7 @@ open class KotlinFileExtractor(
             makeReceiverInfo(callableReferenceExpr.dispatchReceiver, 0)
         private val extensionReceiverInfo =
             makeReceiverInfo(
-                callableReferenceExpr.extensionReceiver,
+                callableReferenceExpr.codeQlExtensionReceiver,
                 if (dispatchReceiverInfo == null) 0 else 1
             )
 
@@ -7622,8 +7636,8 @@ open class KotlinFileExtractor(
                     }
 
             val expressionTypeArguments =
-                (0 until propertyReferenceExpr.typeArgumentsCount).mapNotNull {
-                    propertyReferenceExpr.getTypeArgument(it)
+                (0 until propertyReferenceExpr.codeQlTypeArgumentsCount).mapNotNull {
+                    propertyReferenceExpr.codeQlGetTypeArgument(it)
                 }
 
             val idPropertyRef = tw.getFreshIdLabel<DbPropertyref>()
@@ -7824,7 +7838,7 @@ open class KotlinFileExtractor(
 
             if (
                 functionReferenceExpr.dispatchReceiver != null &&
-                    functionReferenceExpr.extensionReceiver != null
+                    functionReferenceExpr.codeQlExtensionReceiver != null
             ) {
                 logger.errorElement(
                     "Unexpected: dispatchReceiver and extensionReceiver are both non-null",
@@ -7835,7 +7849,7 @@ open class KotlinFileExtractor(
 
             if (
                 target.owner.dispatchReceiverParameter != null &&
-                    target.owner.extensionReceiverParameter != null
+                    target.owner.codeQlExtensionReceiverParameter != null
             ) {
                 logger.errorElement(
                     "Unexpected: dispatch and extension parameters are both non-null",
@@ -7894,8 +7908,8 @@ open class KotlinFileExtractor(
                             null
                         }
                 expressionTypeArguments =
-                    (0 until functionReferenceExpr.typeArgumentsCount).mapNotNull {
-                        functionReferenceExpr.getTypeArgument(it)
+                    (0 until functionReferenceExpr.codeQlTypeArgumentsCount).mapNotNull {
+                        functionReferenceExpr.codeQlGetTypeArgument(it)
                     }
                 dispatchReceiverIdx = -1
             }
@@ -7960,7 +7974,7 @@ open class KotlinFileExtractor(
                         functionReferenceExpr,
                         declarationParent,
                         null,
-                        { it.valueParameters.size == 1 }
+                        { it.codeQlValueParameters.size == 1 }
                     ) {
                         // The argument to FunctionReference's constructor is the function arity.
                         extractConstantInteger(
@@ -8066,7 +8080,7 @@ open class KotlinFileExtractor(
                 ?.symbol
                 ?.typeWithArguments(listOf(functionNTypeArguments.last()))
         else
-            functionN(pluginContext)(functionNTypeArguments.size - 1)
+            pluginContext.irBuiltIns.functionN(functionNTypeArguments.size - 1)
                 .symbol
                 .typeWithArguments(functionNTypeArguments)
 
@@ -8567,7 +8581,7 @@ open class KotlinFileExtractor(
         reverse: Boolean = false
     ) {
         val typeArguments =
-            (0 until c.typeArgumentsCount).map { c.getTypeArgument(it) }.requireNoNullsOrNull()
+            (0 until c.codeQlTypeArgumentsCount).map { c.codeQlGetTypeArgument(it) }.requireNoNullsOrNull()
         if (typeArguments == null) {
             logger.errorElement("Found a null type argument for a member access expression", c)
         } else {
@@ -8918,11 +8932,11 @@ open class KotlinFileExtractor(
                     tw.writeVariableBinding(lhsId, fieldId)
 
                     val parameters = mutableListOf<IrValueParameter>()
-                    val extParam = samMember.extensionReceiverParameter
+                    val extParam = samMember.codeQlExtensionReceiverParameter
                     if (extParam != null) {
                         parameters.add(extParam)
                     }
-                    parameters.addAll(samMember.valueParameters)
+                    parameters.addAll(samMember.codeQlValueParameters)
 
                     fun extractArgument(
                         p: IrValueParameter,
@@ -9027,7 +9041,7 @@ open class KotlinFileExtractor(
         elementToReportOn: IrElement,
         declarationParent: IrDeclarationParent,
         compilerGeneratedKindOverride: CompilerGeneratedKinds? = null,
-        superConstructorSelector: (IrFunction) -> Boolean = { it.valueParameters.isEmpty() },
+        superConstructorSelector: (IrFunction) -> Boolean = { it.codeQlValueParameters.isEmpty() },
         extractSuperconstructorArgs: (Label<DbSuperconstructorinvocationstmt>) -> Unit = {},
     ): Label<out DbClassorinterface> {
         // Write class
@@ -9041,7 +9055,7 @@ open class KotlinFileExtractor(
         tw.writeHasLocation(id, locId)
 
         // Extract constructor
-        val unitType = useType(pluginContext.irBuiltIns.unitType)
+        val unitType = useType(pluginContext.irBuiltIns.unitType, TypeContext.RETURN)
         tw.writeConstrs(ids.constructor, "", "", unitType.javaResult.id, id, ids.constructor)
         tw.writeConstrsKotlinType(ids.constructor, unitType.kotlinResult.id)
         tw.writeHasLocation(ids.constructor, locId)

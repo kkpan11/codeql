@@ -8,6 +8,9 @@ import traceback
 import multiprocessing
 import enum
 import datetime
+import platform
+
+from semmle.util import VERSION, get_analysis_version
 
 
 #Use standard Semmle logging levels
@@ -65,6 +68,14 @@ def write_message_with_proc(level, proc_id, text):
 
 _logging_process = None
 
+def format_message(fmt, args):
+    '''Applies `%`-formatting to `fmt`, but only when there are arguments to interpolate.
+
+    This mirrors the standard library's `logging` behaviour, and means that a message that has
+    already been formatted -- and may therefore contain arbitrary `%` directives coming from the
+    code being analysed -- is passed through unharmed.'''
+    return fmt % args if args else fmt
+
 def stop():
     _logging_process.join()
 
@@ -105,7 +116,7 @@ class Logger(object):
         '''Log a message in a process safe fashion.
         Message will be of the form [level] fmt%args.'''
         if level <= self.level:
-            txt = fmt % args
+            txt = format_message(fmt, args)
             try:
                 self.queue.put((self.color | level, self.proc_id, txt), False)
             except Exception:
@@ -347,6 +358,24 @@ class DiagnosticMessage(StructuredLogObject):
         self.timestamp = timestamp
         return self
 
+def extractor_telemetry_message(extractor_flags):
+    return (DiagnosticMessage(Source("py/extractor/summary", "Python extractor telemetry"), Severity.NOTE)
+            .markdown("Internal telemetry for the Python extractor.\n\nNo action needed.")
+            .attribute("python_analysis_version", get_analysis_version())
+            .attribute("python_runtime_version", platform.python_version())
+            .attribute("extractor_version", VERSION)
+            .attribute("extractor_flags", " ".join(extractor_flags) or "default")
+            .telemetry()
+    )
+
+def parser_statistics_telemetry_message(old_parser_file_count, tree_sitter_parser_file_count):
+    return (DiagnosticMessage(Source("py/extractor/parser-statistics", "Python parser statistics"), Severity.NOTE)
+            .markdown("Internal parser telemetry for the Python extractor.\n\nNo action needed.")
+            .attribute("old_parser_file_count", old_parser_file_count)
+            .attribute("tree_sitter_parser_file_count", tree_sitter_parser_file_count)
+            .telemetry()
+    )
+
 def get_stack_trace_lines():
     """Creates a stack trace for inclusion into the `attributes` part of a diagnostic message.
     Limits the size of the stack trace to 5000 characters, so as to not make the SARIF file overly big.
@@ -359,11 +388,30 @@ def get_stack_trace_lines():
             return lines[:i]
     return lines
 
+def _get_source_root():
+    """Get the source root directory for relativizing diagnostic paths."""
+    return os.environ.get("LGTM_SRC", os.getcwd())
+
+def _relative_path(path):
+    """Make a path relative to the source root for use in diagnostic locations.
+    If the path is not under the source root, return it unchanged."""
+    source_root = os.path.abspath(_get_source_root())
+    abs_path = os.path.abspath(path)
+    try:
+        relpath = os.path.relpath(abs_path, source_root)
+    except ValueError:
+        # On Windows, relpath raises ValueError for paths on different drives
+        return path
+    if relpath.startswith(os.pardir):
+        return path
+    return relpath.replace(os.sep, "/")
+
 def syntax_error_message(exception, unit):
-    l = Location(file=unit.path, startLine=exception.lineno, startColumn=exception.offset)
+    diag_path = _relative_path(unit.path)
+    l = Location(file=diag_path, startLine=exception.lineno, startColumn=exception.offset)
     error = (DiagnosticMessage(Source("py/diagnostics/syntax-error", "Could not process some files due to syntax errors"), Severity.WARNING)
              .with_location(l)
-             .markdown("A parse error occurred while processing `{}`, and as a result this file could not be analyzed. Check the syntax of the file using the `python -m py_compile` command and correct any invalid syntax.".format(unit.path))
+             .markdown("A parse error occurred while processing `{}`, and as a result this file could not be analyzed. Check the syntax of the file using the `python -m py_compile` command and correct any invalid syntax.".format(diag_path))
              .attribute("traceback", get_stack_trace_lines())
              .attribute("args", exception.args)
              .status_page()
@@ -373,7 +421,8 @@ def syntax_error_message(exception, unit):
     return error
 
 def recursion_error_message(exception, unit):
-    l = Location(file=unit.path)
+    # if unit is a BuiltinModuleExtractable, there will be no path attribute
+    l = Location(file=_relative_path(unit.path)) if hasattr(unit, "path") else None
     return (DiagnosticMessage(Source("py/diagnostics/recursion-error", "Recursion error in Python extractor"), Severity.ERROR)
             .with_location(l)
             .text(exception.args[0])
@@ -383,7 +432,8 @@ def recursion_error_message(exception, unit):
     )
 
 def internal_error_message(exception, unit):
-    l = Location(file=unit.path)
+    # if unit is a BuiltinModuleExtractable, there will be no path attribute
+    l = Location(file=_relative_path(unit.path)) if hasattr(unit, "path") else None
     return (DiagnosticMessage(Source("py/diagnostics/internal-error", "Internal error in Python extractor"), Severity.ERROR)
             .with_location(l)
             .text("Internal error")

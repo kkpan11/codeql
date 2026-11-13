@@ -202,24 +202,42 @@ class QueryDoc extends QLDoc {
 
   override string getAPrimaryQlClass() { result = "QueryDoc" }
 
-  /** Gets the @kind for the query */
+  /** Gets the @kind for the query. */
   string getQueryKind() {
     result = this.getContents().regexpCapture("(?s).*@kind ([\\w-]+)\\s.*", 1)
   }
 
-  /** Gets the @name for the query */
+  /** Gets the @name for the query. */
   string getQueryName() {
     result = this.getContents().regexpCapture("(?s).*@name (.+?)(?=\\n).*", 1)
   }
 
-  /** Gets the id part (without language) of the @id */
+  /** Gets the id part (without language) of the @id. */
   string getQueryId() {
     result = this.getContents().regexpCapture("(?s).*@id (\\w+)/([\\w\\-/]+)\\s.*", 2)
   }
 
-  /** Gets the language of the @id */
+  /** Gets the language of the @id. */
   string getQueryLanguage() {
     result = this.getContents().regexpCapture("(?s).*@id (\\w+)/([\\w\\-/]+)\\s.*", 1)
+  }
+
+  /** Gets the @precision for the query. */
+  string getQueryPrecision() {
+    result = this.getContents().regexpCapture("(?s).*@precision ([\\w\\-]+)\\s.*", 1)
+  }
+
+  /** Gets the @security-severity for the query. */
+  string getQuerySecuritySeverity() {
+    result = this.getContents().regexpCapture("(?s).*@security\\-severity ([\\d\\.]+)\\s.*", 1)
+  }
+
+  /** Gets the individual @tags for the query, if any. */
+  string getAQueryTag() {
+    exists(string tags | tags = this.getContents().regexpCapture("(?s).*@tags ([^@]+)", 1) |
+      result = tags.splitAt("*").trim() and
+      result.regexpMatch("[\\w\\s\\-]+")
+    )
   }
 }
 
@@ -815,7 +833,11 @@ class Module extends TModule, ModuleDeclaration {
 
   Module() { this = TModule(mod) }
 
-  override Location getLocation() { result = mod.asLeft().getName().getLocation() }
+  override Location getLocation() {
+    result = mod.asLeft().getName().getLocation()
+    or
+    not exists(mod.asLeft().getName()) and result = mod.asLeft().getLocation()
+  }
 
   override string getAPrimaryQlClass() { result = "Module" }
 
@@ -2508,13 +2530,25 @@ private class AnnotationArg extends TAnnotationArg, AstNode {
 
   AnnotationArg() { this = TAnnotationArg(arg) }
 
+  private predicate isOptional() {
+    arg.getLocation().getEndLine() != arg.getChild().getLocation().getEndLine()
+    or
+    arg.getLocation().getEndColumn() != arg.getChild().getLocation().getEndColumn()
+  }
+
   /** Gets the name of this argument. */
   string getValue() {
-    result =
-      [
-        arg.getChild().(QL::SimpleId).getValue(), arg.getChild().(QL::Result).getValue(),
-        arg.getChild().(QL::This).getValue()
-      ]
+    exists(string value |
+      value =
+        [
+          arg.getChild().(QL::SimpleId).getValue(), arg.getChild().(QL::Result).getValue(),
+          arg.getChild().(QL::This).getValue()
+        ]
+    |
+      result = value and not this.isOptional()
+      or
+      result = value + "?" and this.isOptional()
+    )
   }
 
   override string toString() { result = this.getValue() }
@@ -2536,6 +2570,26 @@ private class InlineArg extends AnnotationArg {
 
 private class NoOptArg extends AnnotationArg {
   NoOptArg() { this.getValue() = "noopt" }
+}
+
+private class CallerArg extends AnnotationArg {
+  CallerArg() { this.getValue() = "caller" }
+}
+
+private class CallerQArg extends AnnotationArg {
+  CallerQArg() { this.getValue() = "caller?" }
+}
+
+private class LocalArg extends AnnotationArg {
+  LocalArg() { this.getValue() = "local" }
+}
+
+private class LocalQArg extends AnnotationArg {
+  LocalQArg() { this.getValue() = "local?" }
+}
+
+private class DiscardEntityArg extends AnnotationArg {
+  DiscardEntityArg() { this.getValue() = "discard_entity" }
 }
 
 private class MonotonicAggregatesArg extends AnnotationArg {
@@ -2595,6 +2649,43 @@ class NoOpt extends Annotation {
   NoOpt() { this.getArgs(0) instanceof NoOptArg }
 
   override string toString() { result = "noopt" }
+}
+
+/** An `overlay[caller]` annotation. */
+class OverlayCaller extends Annotation {
+  OverlayCaller() { this.getName() = "overlay" and this.getArgs(0) instanceof CallerArg }
+
+  override string toString() { result = "overlay[caller]" }
+}
+
+/** An `overlay[caller?]` annotation. */
+class OverlayCallerQ extends Annotation {
+  OverlayCallerQ() { this.getName() = "overlay" and this.getArgs(0) instanceof CallerQArg }
+
+  override string toString() { result = "overlay[caller?]" }
+}
+
+/** An `overlay[local]` annotation. */
+class OverlayLocal extends Annotation {
+  OverlayLocal() { this.getName() = "overlay" and this.getArgs(0) instanceof LocalArg }
+
+  override string toString() { result = "overlay[local]" }
+}
+
+/** An `overlay[local?]` annotation. */
+class OverlayLocalQ extends Annotation {
+  OverlayLocalQ() { this.getName() = "overlay" and this.getArgs(0) instanceof LocalQArg }
+
+  override string toString() { result = "overlay[local?]" }
+}
+
+/** An `overlay[discard_entity]` annotation. */
+class OverlayDiscardEntity extends Annotation {
+  OverlayDiscardEntity() {
+    this.getName() = "overlay" and this.getArgs(0) instanceof DiscardEntityArg
+  }
+
+  override string toString() { result = "overlay[discard_entity]" }
 }
 
 /** A `language[monotonicAggregates]` annotation. */
@@ -2661,6 +2752,12 @@ module YAML {
 
     class ParseErrorBase extends LocatableBase, @yaml_error {
       string getMessage() { yaml_errors(this, result) }
+    }
+
+    class CommentBase extends LocatableBase, @yaml_comment {
+      string getText() { yaml_comments(this, result, _) }
+
+      override string toString() { yaml_comments(this, _, result) }
     }
   }
 

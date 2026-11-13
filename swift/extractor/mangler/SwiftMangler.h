@@ -71,6 +71,7 @@ class SwiftMangler : private swift::TypeVisitor<SwiftMangler, SwiftMangledName>,
   SwiftMangledName visitModuleType(const swift::ModuleType* type);
   SwiftMangledName visitTupleType(const swift::TupleType* type);
   SwiftMangledName visitBuiltinType(const swift::BuiltinType* type);
+  SwiftMangledName visitBuiltinFixedArrayType(const swift::BuiltinFixedArrayType* type);
   SwiftMangledName visitAnyGenericType(const swift::AnyGenericType* type);
 
   // shouldn't be required, but they forgot to link `NominalType` to its direct superclass
@@ -84,6 +85,7 @@ class SwiftMangler : private swift::TypeVisitor<SwiftMangler, SwiftMangledName>,
   SwiftMangledName visitGenericFunctionType(const swift::GenericFunctionType* type);
   SwiftMangledName visitGenericTypeParamType(const swift::GenericTypeParamType* type);
   SwiftMangledName visitAnyMetatypeType(const swift::AnyMetatypeType* type);
+  SwiftMangledName visitExistentialMetatypeType(const swift::ExistentialMetatypeType* type);
   SwiftMangledName visitDependentMemberType(const swift::DependentMemberType* type);
   SwiftMangledName visitInOutType(const swift::InOutType* type);
   SwiftMangledName visitExistentialType(const swift::ExistentialType* type);
@@ -92,9 +94,8 @@ class SwiftMangler : private swift::TypeVisitor<SwiftMangler, SwiftMangledName>,
   SwiftMangledName visitTypeAliasType(const swift::TypeAliasType* type);
   SwiftMangledName visitArchetypeType(const swift::ArchetypeType* type);
   SwiftMangledName visitOpaqueTypeArchetypeType(const swift::OpaqueTypeArchetypeType* type);
-  SwiftMangledName visitOpenedArchetypeType(const swift::OpenedArchetypeType* type);
+  SwiftMangledName visitExistentialArchetypeType(const swift::ExistentialArchetypeType* type);
   SwiftMangledName visitProtocolCompositionType(const swift::ProtocolCompositionType* type);
-  SwiftMangledName visitParenType(const swift::ParenType* type);
   SwiftMangledName visitLValueType(const swift::LValueType* type);
   SwiftMangledName visitDynamicSelfType(const swift::DynamicSelfType* type);
   SwiftMangledName visitUnboundGenericType(const swift::UnboundGenericType* type);
@@ -106,14 +107,32 @@ class SwiftMangler : private swift::TypeVisitor<SwiftMangler, SwiftMangledName>,
   SwiftMangledName visitPackExpansionType(const swift::PackExpansionType* type);
 
  private:
-  std::unordered_map<const swift::Decl*, unsigned> preloadedExtensionIndexes;
+  enum class ExtensionOrFilePrivateValueKind : bool {
+    swift,
+    clang,
+  };
+
+  struct ExtensionOrFilePrivateValueIndex {
+    const ExtensionOrFilePrivateValueKind kind : 1;
+    const uint32_t index : 31;
+  };
+
+  static std::unordered_map<const swift::Decl*, ExtensionOrFilePrivateValueIndex>
+      preloadedExtensionOrFilePrivateValueIndexes;
 
   virtual SwiftMangledName fetch(const swift::Decl* decl) = 0;
   virtual SwiftMangledName fetch(const swift::TypeBase* type) = 0;
   SwiftMangledName fetch(swift::Type type) { return fetch(type.getPointer()); }
 
-  void indexExtensions(llvm::ArrayRef<swift::Decl*> siblings);
-  unsigned int getExtensionIndex(const swift::ExtensionDecl* decl, const swift::Decl* parent);
+  bool isExtensionOrFilePrivateValue(const swift::Decl* decl);
+  void indexExtensionsAndFilePrivateValues(llvm::ArrayRef<swift::Decl*> siblings);
+  uint32_t indexClangSubmoduleExtensionsAndFilePrivateValues(const clang::Module* clangModule,
+                                                             swift::ClangModuleLoader* moduleLoader,
+                                                             uint32_t index);
+  void indexClangExtensionsAndFilePrivateValues(const clang::Module* clangModule,
+                                                swift::ClangModuleLoader* moduleLoader);
+  ExtensionOrFilePrivateValueIndex getExtensionOrFilePrivateValueIndex(const swift::Decl* decl,
+                                                                       const swift::Decl* parent);
   static SwiftMangledName initMangled(const swift::TypeBase* type);
   SwiftMangledName initMangled(const swift::Decl* decl);
   SwiftMangledName visitTypeDiscriminatedValueDecl(const swift::ValueDecl* decl);

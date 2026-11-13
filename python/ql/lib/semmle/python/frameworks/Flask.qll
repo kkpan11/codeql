@@ -2,6 +2,8 @@
  * Provides classes modeling security-relevant aspects of the `flask` PyPI package.
  * See https://flask.palletsprojects.com/en/1.1.x/.
  */
+overlay[local?]
+module;
 
 private import python
 private import semmle.python.dataflow.new.DataFlow
@@ -69,14 +71,21 @@ module Flask {
    * See https://flask.palletsprojects.com/en/1.1.x/api/#flask.Flask.
    */
   module FlaskApp {
-    /** Gets a reference to the `flask.Flask` class. */
-    API::Node classRef() {
-      result = API::moduleImport("flask").getMember("Flask") or
+    /**
+     * Gets a reference to the `flask.Flask` class or any subclass.
+     *
+     * Deprecated: Use `subclassRef()` instead, this predicate always returned some subclasses.
+     */
+    deprecated API::Node classRef() { result = subclassRef() }
+
+    /** Gets a reference to the `flask.Flask` class or any subclass. */
+    API::Node subclassRef() {
+      result = API::moduleImport("flask").getMember("Flask").getASubclass*() or
       result = ModelOutput::getATypeNode("flask.Flask~Subclass").getASubclass*()
     }
 
     /** Gets a reference to an instance of `flask.Flask` (a flask application). */
-    API::Node instance() { result = classRef().getReturn() }
+    API::Node instance() { result = subclassRef().getReturn() }
   }
 
   /**
@@ -130,7 +139,7 @@ module Flask {
     API::Node classRef() {
       result = API::moduleImport("flask").getMember("Response")
       or
-      result = [FlaskApp::classRef(), FlaskApp::instance()].getMember("response_class")
+      result = [FlaskApp::subclassRef(), FlaskApp::instance()].getMember("response_class")
       or
       result = ModelOutput::getATypeNode("flask.Response~Subclass").getASubclass*()
     }
@@ -369,7 +378,7 @@ module Flask {
       result in [this.getArg(0), this.getArgByName("rule")]
     }
 
-    override Function getARequestHandler() { result.getADecorator().getAFlowNode() = node }
+    override Function getARequestHandler() { node.getNode() = result.getADecorator() }
   }
 
   /**
@@ -534,7 +543,7 @@ module Flask {
     FlaskRouteHandlerReturn() {
       exists(Function routeHandler |
         routeHandler = any(FlaskRouteSetup rs).getARequestHandler() and
-        node = routeHandler.getAReturnValueFlowNode() and
+        exists(Return ret | ret.getScope() = routeHandler and node.getNode() = ret.getValue()) and
         not this instanceof Flask::Response::InstanceSource
       )
     }
@@ -583,9 +592,7 @@ module Flask {
    *
    * See https://flask.palletsprojects.com/en/2.0.x/api/#flask.Response.set_cookie
    */
-  class FlaskResponseSetCookieCall extends Http::Server::CookieWrite::Range,
-    DataFlow::MethodCallNode
-  {
+  class FlaskResponseSetCookieCall extends Http::Server::SetCookieCall, DataFlow::MethodCallNode {
     FlaskResponseSetCookieCall() { this.calls(Flask::Response::instance(), "set_cookie") }
 
     override DataFlow::Node getHeaderArg() { none() }
@@ -623,24 +630,15 @@ module Flask {
     }
 
     override DataFlow::Node getAPathArgument() {
-      result in [
-          this.getArg(0), this.getArgByName("directory"),
-          // as described in the docs, the `filename` argument is restrained to be within
-          // the provided directory, so is not exposed to path-injection. (but is still a
-          // path-argument).
-          this.getArg(1), this.getArgByName("filename")
-        ]
+      result = this.getArg([0, 1]) or
+      result = this.getArgByName(["directory", "filename"])
     }
-  }
 
-  /**
-   * To exclude `filename` argument to `flask.send_from_directory` as a path-injection sink.
-   */
-  private class FlaskSendFromDirectoryCallFilenameSanitizer extends PathInjection::Sanitizer {
-    FlaskSendFromDirectoryCallFilenameSanitizer() {
-      this = any(FlaskSendFromDirectoryCall c).getArg(1)
-      or
-      this = any(FlaskSendFromDirectoryCall c).getArgByName("filename")
+    override DataFlow::Node getAVulnerablePathArgument() {
+      result = this.getAPathArgument() and
+      // as described in the docs, the `filename` argument is restricted to be within
+      // the provided directory, so is not exposed to path-injection.
+      not result in [this.getArg(1), this.getArgByName("filename")]
     }
   }
 
@@ -676,7 +674,7 @@ module Flask {
    *
    * see https://flask.palletsprojects.com/en/2.3.x/api/#flask.render_template_string
    */
-  private class RenderTemplateStringSummary extends SummarizedCallable {
+  private class RenderTemplateStringSummary extends SummarizedCallable::Range {
     RenderTemplateStringSummary() { this = "flask.render_template_string" }
 
     override DataFlow::CallCfgNode getACall() {
@@ -702,7 +700,7 @@ module Flask {
    *
    * see https://flask.palletsprojects.com/en/2.3.x/api/#flask.stream_template_string
    */
-  private class StreamTemplateStringSummary extends SummarizedCallable {
+  private class StreamTemplateStringSummary extends SummarizedCallable::Range {
     StreamTemplateStringSummary() { this = "flask.stream_template_string" }
 
     override DataFlow::CallCfgNode getACall() {
@@ -722,5 +720,17 @@ module Flask {
       output = "ReturnValue.ListElement" and
       preservesValue = false
     }
+  }
+
+  /** A call to `flask.render_template_string` or `flask.stream_template_string` as a template construction sink. */
+  private class FlaskTemplateConstruction extends TemplateConstruction::Range, API::CallNode {
+    FlaskTemplateConstruction() {
+      this =
+        API::moduleImport("flask")
+            .getMember(["render_template_string", "stream_template_string"])
+            .getACall()
+    }
+
+    override DataFlow::Node getSourceArg() { result = this.getArg(0) }
   }
 }

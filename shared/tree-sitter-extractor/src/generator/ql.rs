@@ -5,30 +5,54 @@ use std::fmt;
 pub enum TopLevel<'a> {
     Class(Class<'a>),
     Import(Import<'a>),
+    ModuleAlias(ModuleAlias<'a>),
     Module(Module<'a>),
+    Predicate(Predicate<'a>),
 }
 
-impl<'a> fmt::Display for TopLevel<'a> {
+impl fmt::Display for TopLevel<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            TopLevel::Import(imp) => write!(f, "{}", imp),
-            TopLevel::Class(cls) => write!(f, "{}", cls),
-            TopLevel::Module(m) => write!(f, "{}", m),
+            TopLevel::Import(imp) => write!(f, "{imp}"),
+            TopLevel::Class(cls) => write!(f, "{cls}"),
+            TopLevel::ModuleAlias(alias) => write!(f, "{alias}"),
+            TopLevel::Module(m) => write!(f, "{m}"),
+            TopLevel::Predicate(pred) => write!(f, "{pred}"),
         }
     }
 }
 
 #[derive(Clone, Eq, PartialEq, Hash)]
+pub struct ModuleAlias<'a> {
+    pub is_private: bool,
+    pub name: &'a str,
+    pub target: &'a str,
+}
+
+impl fmt::Display for ModuleAlias<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        if self.is_private {
+            write!(f, "private ")?;
+        }
+        write!(f, "module {} = {};", self.name, self.target)
+    }
+}
+
+#[derive(Clone, Eq, PartialEq, Hash)]
 pub struct Import<'a> {
+    pub is_private: bool,
     pub module: &'a str,
     pub alias: Option<&'a str>,
 }
 
-impl<'a> fmt::Display for Import<'a> {
+impl fmt::Display for Import<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "import {}", &self.module)?;
+        if self.is_private {
+            write!(f, "private ")?;
+        }
+        write!(f, "import {}", self.module)?;
         if let Some(name) = &self.alias {
-            write!(f, " as {}", name)?;
+            write!(f, " as {name}")?;
         }
         Ok(())
     }
@@ -38,25 +62,38 @@ pub struct Class<'a> {
     pub qldoc: Option<String>,
     pub name: &'a str,
     pub is_abstract: bool,
+    pub is_final: bool,
+    pub is_private: bool,
     pub supertypes: BTreeSet<Type<'a>>,
     pub characteristic_predicate: Option<Expression<'a>>,
     pub predicates: Vec<Predicate<'a>>,
+    pub alias: Option<String>,
 }
 
-impl<'a> fmt::Display for Class<'a> {
+impl fmt::Display for Class<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         if let Some(qldoc) = &self.qldoc {
-            write!(f, "/** {} */", qldoc)?;
+            write!(f, "/** {qldoc} */")?;
+        }
+        if self.is_final {
+            write!(f, "final ")?;
+        }
+        if self.is_private {
+            write!(f, "private ")?;
+        }
+        if let Some(alias) = &self.alias {
+            write!(f, "class {} = {alias};", self.name)?;
+            return Ok(());
         }
         if self.is_abstract {
             write!(f, "abstract ")?;
         }
-        write!(f, "class {} extends ", &self.name)?;
+        write!(f, "class {} extends ", self.name)?;
         for (index, supertype) in self.supertypes.iter().enumerate() {
             if index > 0 {
                 write!(f, ", ")?;
             }
-            write!(f, "{}", supertype)?;
+            write!(f, "{supertype}")?;
         }
         writeln!(f, " {{ ")?;
 
@@ -68,16 +105,18 @@ impl<'a> fmt::Display for Class<'a> {
                     qldoc: None,
                     name: self.name,
                     overridden: false,
+                    is_private: false,
                     is_final: false,
                     return_type: None,
                     formal_parameters: vec![],
                     body: charpred.clone(),
+                    overlay: None,
                 }
             )?;
         }
 
         for predicate in &self.predicates {
-            writeln!(f, "  {}", predicate)?;
+            writeln!(f, "  {predicate}")?;
         }
 
         write!(f, "}}")?;
@@ -91,16 +130,25 @@ pub struct Module<'a> {
     pub qldoc: Option<String>,
     pub name: &'a str,
     pub body: Vec<TopLevel<'a>>,
+    pub overlay: Option<OverlayAnnotation>,
 }
 
-impl<'a> fmt::Display for Module<'a> {
+impl fmt::Display for Module<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         if let Some(qldoc) = &self.qldoc {
-            write!(f, "/** {} */", qldoc)?;
+            write!(f, "/** {qldoc} */")?;
+        }
+        if let Some(overlay_annotation) = &self.overlay {
+            write!(f, "overlay[")?;
+            match overlay_annotation {
+                OverlayAnnotation::Local => write!(f, "local")?,
+                OverlayAnnotation::DiscardEntity => write!(f, "discard_entity")?,
+            }
+            write!(f, "] ")?;
         }
         writeln!(f, "module {} {{ ", self.name)?;
         for decl in &self.body {
-            writeln!(f, "  {}", decl)?;
+            writeln!(f, "  {decl}")?;
         }
         write!(f, "}}")?;
         Ok(())
@@ -120,15 +168,19 @@ pub enum Type<'a> {
 
     /// A user-defined type.
     Normal(&'a str),
+
+    /// A normal type with an `F::` prefix.
+    Facade(&'a str),
 }
 
-impl<'a> fmt::Display for Type<'a> {
+impl fmt::Display for Type<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Type::Int => write!(f, "int"),
             Type::String => write!(f, "string"),
-            Type::Normal(name) => write!(f, "{}", name),
-            Type::At(name) => write!(f, "@{}", name),
+            Type::Normal(name) => write!(f, "{name}"),
+            Type::At(name) => write!(f, "@{name}"),
+            Type::Facade(name) => write!(f, "F::{name}"),
         }
     }
 }
@@ -137,12 +189,14 @@ impl<'a> fmt::Display for Type<'a> {
 pub enum Expression<'a> {
     Var(&'a str),
     String(&'a str),
-    Integer(usize),
+    Integer(i64),
     Pred(&'a str, Vec<Expression<'a>>),
     And(Vec<Expression<'a>>),
     Or(Vec<Expression<'a>>),
     Equals(Box<Expression<'a>>, Box<Expression<'a>>),
     Dot(Box<Expression<'a>>, &'a str, Vec<Expression<'a>>),
+    /// A type cast, rendered as `x.(Type)`.
+    Cast(Box<Expression<'a>>, &'a str),
     Aggregate {
         name: &'a str,
         vars: Vec<FormalParameter<'a>>,
@@ -150,21 +204,22 @@ pub enum Expression<'a> {
         expr: Box<Expression<'a>>,
         second_expr: Option<Box<Expression<'a>>>,
     },
+    Negation(Box<Expression<'a>>),
 }
 
-impl<'a> fmt::Display for Expression<'a> {
+impl fmt::Display for Expression<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Expression::Var(x) => write!(f, "{}", x),
-            Expression::String(s) => write!(f, "\"{}\"", s),
-            Expression::Integer(n) => write!(f, "{}", n),
+            Expression::Var(x) => write!(f, "{x}"),
+            Expression::String(s) => write!(f, "\"{s}\""),
+            Expression::Integer(n) => write!(f, "{n}"),
             Expression::Pred(n, args) => {
-                write!(f, "{}(", n)?;
+                write!(f, "{n}(")?;
                 for (index, arg) in args.iter().enumerate() {
                     if index > 0 {
                         write!(f, ", ")?;
                     }
-                    write!(f, "{}", arg)?;
+                    write!(f, "{arg}")?;
                 }
                 write!(f, ")")
             }
@@ -176,7 +231,7 @@ impl<'a> fmt::Display for Expression<'a> {
                         if index > 0 {
                             write!(f, " and ")?;
                         }
-                        write!(f, "({})", conjunct)?;
+                        write!(f, "({conjunct})")?;
                     }
                     Ok(())
                 }
@@ -189,22 +244,23 @@ impl<'a> fmt::Display for Expression<'a> {
                         if index > 0 {
                             write!(f, " or ")?;
                         }
-                        write!(f, "({})", disjunct)?;
+                        write!(f, "({disjunct})")?;
                     }
                     Ok(())
                 }
             }
-            Expression::Equals(a, b) => write!(f, "{} = {}", a, b),
+            Expression::Equals(a, b) => write!(f, "{a} = {b}"),
             Expression::Dot(x, member_pred, args) => {
-                write!(f, "{}.{}(", x, member_pred)?;
+                write!(f, "{x}.{member_pred}(")?;
                 for (index, arg) in args.iter().enumerate() {
                     if index > 0 {
                         write!(f, ", ")?;
                     }
-                    write!(f, "{}", arg)?;
+                    write!(f, "{arg}")?;
                 }
                 write!(f, ")")
             }
+            Expression::Cast(x, type_name) => write!(f, "{x}.({type_name})"),
             Expression::Aggregate {
                 name,
                 vars,
@@ -212,27 +268,34 @@ impl<'a> fmt::Display for Expression<'a> {
                 expr,
                 second_expr,
             } => {
-                write!(f, "{}(", name)?;
+                write!(f, "{name}(")?;
                 if !vars.is_empty() {
                     for (index, var) in vars.iter().enumerate() {
                         if index > 0 {
                             write!(f, ", ")?;
                         }
-                        write!(f, "{}", var)?;
+                        write!(f, "{var}")?;
                     }
                     write!(f, " | ")?;
                 }
                 if let Some(range) = range {
-                    write!(f, "{} | ", range)?;
+                    write!(f, "{range} | ")?;
                 }
-                write!(f, "{}", expr)?;
+                write!(f, "{expr}")?;
                 if let Some(second_expr) = second_expr {
-                    write!(f, ", {}", second_expr)?;
+                    write!(f, ", {second_expr}")?;
                 }
                 write!(f, ")")
             }
+            Expression::Negation(e) => write!(f, "not ({e})"),
         }
     }
+}
+
+#[derive(Clone, Eq, PartialEq, Hash)]
+pub enum OverlayAnnotation {
+    Local,
+    DiscardEntity,
 }
 
 #[derive(Clone, Eq, PartialEq, Hash)]
@@ -240,16 +303,29 @@ pub struct Predicate<'a> {
     pub qldoc: Option<String>,
     pub name: &'a str,
     pub overridden: bool,
+    pub is_private: bool,
     pub is_final: bool,
     pub return_type: Option<Type<'a>>,
     pub formal_parameters: Vec<FormalParameter<'a>>,
     pub body: Expression<'a>,
+    pub overlay: Option<OverlayAnnotation>,
 }
 
-impl<'a> fmt::Display for Predicate<'a> {
+impl fmt::Display for Predicate<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         if let Some(qldoc) = &self.qldoc {
-            write!(f, "/** {} */", qldoc)?;
+            write!(f, "/** {qldoc} */")?;
+        }
+        if let Some(overlay_annotation) = &self.overlay {
+            write!(f, "overlay[")?;
+            match overlay_annotation {
+                OverlayAnnotation::Local => write!(f, "local")?,
+                OverlayAnnotation::DiscardEntity => write!(f, "discard_entity")?,
+            }
+            write!(f, "] ")?;
+        }
+        if self.is_private {
+            write!(f, "private ")?;
         }
         if self.is_final {
             write!(f, "final ")?;
@@ -259,14 +335,14 @@ impl<'a> fmt::Display for Predicate<'a> {
         }
         match &self.return_type {
             None => write!(f, "predicate ")?,
-            Some(return_type) => write!(f, "{} ", return_type)?,
+            Some(return_type) => write!(f, "{return_type} ")?,
         }
         write!(f, "{}(", self.name)?;
         for (index, param) in self.formal_parameters.iter().enumerate() {
             if index > 0 {
                 write!(f, ", ")?;
             }
-            write!(f, "{}", param)?;
+            write!(f, "{param}")?;
         }
         write!(f, ") {{ {} }}", self.body)?;
 
@@ -280,7 +356,7 @@ pub struct FormalParameter<'a> {
     pub param_type: Type<'a>,
 }
 
-impl<'a> fmt::Display for FormalParameter<'a> {
+impl fmt::Display for FormalParameter<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{} {}", self.param_type, self.name)
     }
@@ -289,7 +365,7 @@ impl<'a> fmt::Display for FormalParameter<'a> {
 /// Generates a QL library by writing the given `elements` to the `file`.
 pub fn write(file: &mut dyn std::io::Write, elements: &[TopLevel]) -> std::io::Result<()> {
     for element in elements {
-        write!(file, "{}\n\n", &element)?;
+        write!(file, "{}\n\n", element)?;
     }
     Ok(())
 }

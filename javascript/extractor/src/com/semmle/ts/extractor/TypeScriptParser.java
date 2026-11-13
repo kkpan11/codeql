@@ -101,19 +101,16 @@ public class TypeScriptParser {
    * set to indicate the maximum heap space usable by the Node.js process, in addition to its
    * "reserve memory".
    *
-   * <p>Defaults to 1.0 GB (for a total heap space of 1.4 GB by default).
+   * <p>Defaults to 2000 MB (for a total heap space of 2400 MB by default).
    */
   public static final String TYPESCRIPT_RAM_SUFFIX = "TYPESCRIPT_RAM";
 
   /**
    * An environment variable (without the <code>SEMMLE_</code> or <code>LGTM_</code> prefix), that can be
-   * set to indicate the amount of heap space the Node.js process should reserve for extracting
-   * individual files.
+   * set to indicate the additional heap space added to <code>TYPESCRIPT_RAM</code> when setting the
+   * Node.js heap limit.
    *
-   * <p>When less than this amount of memory is available, the TypeScript compiler instance is
-   * restarted to free space.
-   *
-   * <p>Defaults to 400 MB (for a total heap space of 1.4 GB by default).
+   * <p>Defaults to 400 MB (for a total heap space of 2400 MB by default).
    */
   public static final String TYPESCRIPT_RAM_RESERVE_SUFFIX = "TYPESCRIPT_RAM_RESERVE";
 
@@ -163,7 +160,7 @@ public class TypeScriptParser {
   /** Metadata requested immediately after starting the TypeScript parser. */
   private TypeScriptParserMetadata metadata;
 
-  /** Sets the amount of RAM to allocate to the TypeScript compiler.s */
+  /** Sets the amount of RAM for the Node.js process's V8 old-space limit.  */
   public void setTypescriptRam(int megabytes) {
     this.typescriptRam = megabytes;
   }
@@ -306,7 +303,6 @@ public class TypeScriptParser {
 
     ProcessBuilder pb = new ProcessBuilder(cmd);
     parserWrapperCommand = StringUtil.glue(" ", cmd);
-    pb.environment().put("SEMMLE_TYPESCRIPT_MEMORY_THRESHOLD", "" + mainMemoryMb);
 
     try {
       pb.redirectError(Redirect.INHERIT); // Forward stderr to our own stderr.
@@ -461,113 +457,6 @@ public class TypeScriptParser {
     request.add("filenames", filenames);
     JsonObject response = talkToParserWrapper(request);
     checkResponseType(response, "ok");
-  }
-
-  /**
-   * Converts a map to an array of [key, value] pairs.
-   */
-  private JsonArray mapToArray(Map<String, Path> map) {
-    JsonArray result = new JsonArray();
-    map.forEach(
-        (key, path) -> {
-          JsonArray entry = new JsonArray();
-          entry.add(key);
-          entry.add(path.toString());
-          result.add(entry);
-        });
-    return result;
-  }
-
-  private static Set<File> getFilesFromJsonArray(JsonArray array) {
-    Set<File> files = new LinkedHashSet<>();
-    for (JsonElement elm : array) {
-      files.add(new File(elm.getAsString()));
-    }
-    return files;
-  }
-
-  /**
-   * Returns the set of files included by the inclusion pattern in the given tsconfig.json file.
-   */
-  public Set<File> getOwnFiles(File tsConfigFile, DependencyInstallationResult deps, VirtualSourceRoot vroot) {
-    JsonObject request = makeLoadCommand("get-own-files", tsConfigFile, deps, vroot);
-    JsonObject response = talkToParserWrapper(request);
-    try {
-      checkResponseType(response, "file-list");
-      return getFilesFromJsonArray(response.get("ownFiles").getAsJsonArray());
-    } catch (IllegalStateException e) {
-      throw new CatastrophicError(
-          "TypeScript parser wrapper sent unexpected response: " + response, e);
-    }
-  }
-
-  /**
-   * Opens a new project based on a tsconfig.json file. The compiler will analyze all files in the
-   * project.
-   *
-   * <p>Call {@link #parse} to access individual files in the project.
-   *
-   * <p>Only one project should be opened at once.
-   */
-  public ParsedProject openProject(File tsConfigFile, DependencyInstallationResult deps, VirtualSourceRoot vroot) {
-    JsonObject request = makeLoadCommand("open-project", tsConfigFile, deps, vroot);
-    JsonObject response = talkToParserWrapper(request);
-    try {
-      checkResponseType(response, "project-opened");
-      ParsedProject project = new ParsedProject(tsConfigFile,
-          getFilesFromJsonArray(response.get("ownFiles").getAsJsonArray()),
-          getFilesFromJsonArray(response.get("allFiles").getAsJsonArray()));
-      return project;
-    } catch (IllegalStateException e) {
-      throw new CatastrophicError(
-          "TypeScript parser wrapper sent unexpected response: " + response, e);
-    }
-  }
-
-  private JsonObject makeLoadCommand(String command, File tsConfigFile, DependencyInstallationResult deps, VirtualSourceRoot vroot) {
-    JsonObject request = new JsonObject();
-    request.add("command", new JsonPrimitive(command));
-    request.add("tsConfig", new JsonPrimitive(tsConfigFile.getPath()));
-    request.add("packageEntryPoints", mapToArray(deps.getPackageEntryPoints()));
-    request.add("packageJsonFiles", mapToArray(deps.getPackageJsonFiles()));
-    request.add("sourceRoot", vroot.getSourceRoot() == null
-        ? JsonNull.INSTANCE
-        : new JsonPrimitive(vroot.getSourceRoot().toString()));
-    request.add("virtualSourceRoot", vroot.getVirtualSourceRoot() == null
-        ? JsonNull.INSTANCE
-        : new JsonPrimitive(vroot.getVirtualSourceRoot().toString()));
-    return request;
-  }
-
-  /**
-   * Closes a project previously opened.
-   *
-   * <p>This main purpose is to free heap space in the Node.js process.
-   */
-  public void closeProject(File tsConfigFile) {
-    JsonObject request = new JsonObject();
-    request.add("command", new JsonPrimitive("close-project"));
-    request.add("tsConfig", new JsonPrimitive(tsConfigFile.getPath()));
-    JsonObject response = talkToParserWrapper(request);
-    try {
-      checkResponseType(response, "project-closed");
-    } catch (IllegalStateException e) {
-      throw new CatastrophicError(
-          "TypeScript parser wrapper sent unexpected response: " + response, e);
-    }
-  }
-
-  public TypeTable getTypeTable() {
-    JsonObject request = new JsonObject();
-    request.add("command", new JsonPrimitive("get-type-table"));
-    JsonObject response = talkToParserWrapper(request);
-    try {
-      checkResponseType(response, "type-table");
-      return new TypeTable(response.get("typeTable").getAsJsonObject());
-    } catch (IllegalStateException e) {
-      throw new CatastrophicError(
-          "TypeScript parser wrapper sent unexpected response: " + response, e);
-    }
   }
 
   /**

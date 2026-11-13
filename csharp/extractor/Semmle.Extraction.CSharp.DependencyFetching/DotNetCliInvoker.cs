@@ -12,17 +12,19 @@ namespace Semmle.Extraction.CSharp.DependencyFetching
     internal sealed class DotNetCliInvoker : IDotNetCliInvoker
     {
         private readonly ILogger logger;
+        private readonly IRegistryProxy? proxy;
 
         public string Exec { get; }
 
-        public DotNetCliInvoker(ILogger logger, string exec)
+        public DotNetCliInvoker(ILogger logger, string exec, IRegistryProxy? registryProxy)
         {
             this.logger = logger;
+            this.proxy = registryProxy;
             this.Exec = exec;
             logger.LogInfo($"Using .NET CLI executable: '{Exec}'");
         }
 
-        private ProcessStartInfo MakeDotnetStartInfo(string args, string? workingDirectory)
+        private ProcessStartInfo MakeDotnetStartInfo(List<string> args, string? workingDirectory)
         {
             var startInfo = new ProcessStartInfo(Exec, args)
             {
@@ -34,37 +36,52 @@ namespace Semmle.Extraction.CSharp.DependencyFetching
             {
                 startInfo.WorkingDirectory = workingDirectory;
             }
-            // Set the .NET CLI language to English to avoid localized output.
-            startInfo.EnvironmentVariables["DOTNET_CLI_UI_LANGUAGE"] = "en";
-            startInfo.EnvironmentVariables["MSBUILDDISABLENODEREUSE"] = "1";
-            startInfo.EnvironmentVariables["DOTNET_SKIP_FIRST_TIME_EXPERIENCE"] = "true";
+
+            // Set minimal environment variables.
+            foreach (var kvp in IDotNetCliInvoker.MinimalEnvironment)
+            {
+                startInfo.EnvironmentVariables[kvp.Key] = kvp.Value;
+            }
+
+            // Configure the proxy settings, if applicable.
+            proxy?.SetProcessEnvironment(startInfo);
+
             return startInfo;
         }
 
-        private bool RunCommandAux(string args, string? workingDirectory, out IList<string> output, bool silent)
+        private int RunCommandExitCodeAux(List<string> args, string? workingDirectory, out IList<string> output, out string dirLog, bool silent)
         {
-            var dirLog = string.IsNullOrWhiteSpace(workingDirectory) ? "" : $" in {workingDirectory}";
-            logger.LogInfo($"Running '{Exec} {args}'{dirLog}");
+            dirLog = string.IsNullOrWhiteSpace(workingDirectory) ? "" : $" in {workingDirectory}";
             var pi = MakeDotnetStartInfo(args, workingDirectory);
             var threadId = Environment.CurrentManagedThreadId;
             void onOut(string s) => logger.Log(silent ? Severity.Debug : Severity.Info, s, threadId);
             void onError(string s) => logger.LogError(s, threadId);
+            logger.LogInfo($"Running '{Exec} {string.Join(" ", args)}'{dirLog}");
             var exitCode = pi.ReadOutput(out output, onOut, onError);
+            return exitCode;
+        }
+
+        private bool RunCommandAux(List<string> args, string? workingDirectory, out IList<string> output, bool silent)
+        {
+            var exitCode = RunCommandExitCodeAux(args, workingDirectory, out output, out var dirLog, silent);
             if (exitCode != 0)
             {
-                logger.LogError($"Command '{Exec} {args}'{dirLog} failed with exit code {exitCode}");
+                logger.LogError($"Command '{Exec} {string.Join(" ", args)}'{dirLog} failed with exit code {exitCode}");
                 return false;
             }
             return true;
         }
 
-        public bool RunCommand(string args, bool silent) =>
+        public bool RunCommand(List<string> args, bool silent = true) =>
             RunCommandAux(args, null, out _, silent);
 
-        public bool RunCommand(string args, out IList<string> output, bool silent) =>
+        public int RunCommandExitCode(List<string> args, bool silent = true) =>
+            RunCommandExitCodeAux(args, null, out _, out _, silent);
+
+        public bool RunCommand(List<string> args, out IList<string> output, bool silent = true) =>
             RunCommandAux(args, null, out output, silent);
 
-        public bool RunCommand(string args, string? workingDirectory, out IList<string> output, bool silent) =>
+        public bool RunCommand(List<string> args, string? workingDirectory, out IList<string> output, bool silent = true) =>
             RunCommandAux(args, workingDirectory, out output, silent);
     }
 }

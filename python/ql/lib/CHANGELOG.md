@@ -1,3 +1,422 @@
+## 7.2.9
+
+No user-facing changes.
+
+## 7.2.8
+
+### Minor Analysis Improvements
+
+* Updated the `py/xxe`, `py/xml-bomb`, and `py/nosql-injection` queries to respect the configured threat model when selecting untrusted data sources. The default behavior remains unchanged and uses remote flow sources. As a side effect, these queries now correctly include sources modeled using data extensions.
+* Added taint-flow modeling for `unicodedata.iter_graphemes`, introduced in Python 3.15.
+* Added data-flow modeling for `threading.serialize_iterator` and `threading.concurrent_tee`, introduced in Python 3.15.
+* Added modeling for the Base32, Base85, and Ascii85 encoding and decoding functions introduced in Python 3.15's `binascii` module, including taint flow through custom alphabets.
+* Added support for the `frozendict` and `sentinel` builtins introduced in Python 3.15, and data-flow modeling for `frozendict` construction.
+* The Python extractor now supports unary plus in `match` literal patterns, introduced in Python 3.15.
+* The Python extractor now supports Unicode 17 identifiers, introduced in Python 3.15.
+* Added modeling for the `extra_response_headers` constructor argument and instance attribute of `http.server.SimpleHTTPRequestHandler`, introduced in Python 3.15.
+* Added modeling for Python 3.15's `re.prefixmatch` and `re.Pattern.prefixmatch`, matching the existing support for their `match` counterparts.
+* Added taint-flow modeling for `bytearray` construction and Python 3.15's `bytearray.take_bytes` method.
+
+## 7.2.7
+
+No user-facing changes.
+
+## 7.2.6
+
+No user-facing changes.
+
+## 7.2.5
+
+### Bug Fixes
+
+* Fixed a bug where a Python file could be silently dropped from the analysis (with a spurious "A parse error occurred" diagnostic) when it contained a string literal, comment, or identifier with a character such as the U+FE0F emoji variation selector, a U+200D zero width joiner, or a combining accent.
+* Fixed the extraction of PEP 758 `except A, B:` clauses by the default (non-tree-sitter) Python parser. Previously the second exception type was extracted as a Python 2 style alias binding, so it was recorded as a `Store` rather than a use. This caused false positives from queries that reason about whether a name is used, such as `py/unused-import`. When extracting Python 2 (`--lang=2`), `except A, e:` continues to bind `e` as an alias, since that is what the syntax means in that version.
+
+## 7.2.4
+
+### Minor Analysis Improvements
+
+* Added taint flow through `list.extend` and `list.insert`, matching the existing taint flow through `list.append`.
+
+## 7.2.3
+
+No user-facing changes.
+
+## 7.2.2
+
+No user-facing changes.
+
+## 7.2.1
+
+### Minor Analysis Improvements
+
+* `Flask::FlaskApp::instance()` will now also return instances of subclasses defined in the source tree. Previously, these were filtered out. `Flask::FlaskApp::classRef()` has been deprecated in favor of `Flask::FlaskApp::subclassRef()` since it already returned some subclasses.
+
+## 7.2.0
+
+### Deprecated APIs
+
+* The `Function.getAReturnValueFlowNode()` predicate has been deprecated. Bind a `Return` node explicitly instead — `exists(Return ret | ret.getScope() = f and n.getNode() = ret.getValue())`. This is a preparatory step towards migrating the dataflow library off the legacy CFG; it has no semantic effect.
+* The `AstNode.getAFlowNode()` predicate has been deprecated. Use `ControlFlowNode.getNode()` from the other direction instead: replace `e.getAFlowNode() = n` with `n.getNode() = e`. This is a preparatory step towards migrating the dataflow library off the legacy CFG; it has no semantic effect.
+
+### Minor Analysis Improvements
+
+* Python type tracking now follows values stored in instance attributes such as `self.attr` across instance methods, including across a class hierarchy (for example, a value stored on `self.attr` in a base class and read in a subclass, or vice versa). As a result, analysis is more likely to recognize user-defined objects that are stored on `self` and used later in other methods, which may produce additional results.
+* Simplified the internal predicates that detect `@staticmethod`, `@classmethod` and `@property` decorators to match the decorator's AST `Name` directly, rather than going through the CFG and requiring the name to resolve globally. Code that shadows these three builtin decorators at the module-scope will now be classified by the decorator name alone; in practice, shadowing these names is extremely rare and the call-graph results are unchanged.
+* Python taint tracking is now more precise for values flowing through container contents, such as list, set, tuple, and dictionary elements. This may remove some false positive alerts.
+
+## 7.1.2
+
+### Minor Analysis Improvements
+
+* The sensitive data heuristics used to identify code that handles passwords and private data have been improved. Most of the changes permit more variations of established patterns, thereby finding more sensitive data. Queries that use the sensitive data library (for example `py/clear-text-logging-sensitive-data`) may find more correct results and fewer false positive results after these changes.
+
+## 7.1.1
+
+No user-facing changes.
+
+## 7.1.0
+
+### New Features
+
+* Data flow barriers and barrier guards can now be added using data extensions. For more information see [Customizing library models for Python](https://codeql.github.com/docs/codeql-language-guides/customizing-library-models-for-python/).
+
+### Minor Analysis Improvements
+
+- The Python extractor now supports unpacking in comprehensions, e.g. `[*x for x in nested]` (as defined in [PEP-798](https://peps.python.org/pep-0798/)) that will be part of Python 3.15.
+
+## 7.0.5
+
+### Minor Analysis Improvements
+
+- The Python extractor now supports the new `lazy import ...` and `lazy from ... import ...` (as defined in [PEP-810](https://peps.python.org/pep-0810/)) that will be part of Python 3.15.
+
+## 7.0.4
+
+### Bug Fixes
+
+- Fixed the resolution of relative imports such as `from . import helper` inside namespace packages (directories without an `__init__.py` file), which previously did not work correctly, leading to missing flow.
+
+## 7.0.3
+
+No user-facing changes.
+
+## 7.0.2
+
+No user-facing changes.
+
+## 7.0.1
+
+### Minor Analysis Improvements
+
+- The call graph resolution no longer considers methods marked using [`@typing.overload`](https://typing.python.org/en/latest/spec/overload.html#overloads) as valid targets. This ensures that only the method that contains the actual implementation gets resolved as a target.
+* Inline expectations test comments, which are of the form `# $ tag` or `# $ tag=value`, are now parsed more strictly and will not be recognized if there isn't a space after the `$` symbol.
+
+## 7.0.0
+
+### Breaking Changes
+
+- The `Metrics` library no longer contains code that depends on the points-to analysis. The removed functionality has instead been moved to the `LegacyPointsTo` module, to classes like `ModuleMetricsWithPointsTo` etc. If you depend on any of these classes, you must now remember to import `LegacyPointsTo`, and use the appropriate types in order to use the points-to-based functionality.
+
+### Major Analysis Improvements
+
+- The CodeQL Python libraries have been updated to be compatible with overlay evaluation. This should result in a significant speedup on analyses for which a base database already exists. Note that it may be necessary to add `overlay[local?] module;` to user-managed libraries that extend classes that are now marked as `overlay[local]`.
+
+### Minor Analysis Improvements
+
+* Added new full SSRF sanitization barrier from the new AntiSSRF library. 
+* When a guard such as `isSafe(x)` is defined, we now also automatically handle `isSafe(x) == true` and `isSafe(x) != false`.
+
+## 6.1.1
+
+### Minor Analysis Improvements
+
+* Added request forgery sink models for the Azure SDK.
+* Made it so that models-as-data sinks with the kind `request-forgery` contribute to the class `Http::Client::Request` which represents HTTP client requests.
+
+### Bug Fixes
+
+- Using `=` as a fill character in a format specifier (e.g. `f"{x:=^20}"`) now no longer results in a syntax error during parsing.
+
+## 6.1.0
+
+### New Features
+
+* It is now possible to refer to list elements in the Python models-as-data language, via the `ListElement` path.
+
+### Minor Analysis Improvements
+
+* The predicate `SummarizedCallable.propagatesFlow` has been extended with the columns `Provenance p` and `boolean isExact`, and as a consequence the predicates `SummarizedCallable.hasProvenance` and `SummarizedCallable.hasExactModel` have been removed.
+* Added experimental query `py/prompt-injection` to detect potential prompt injection vulnerabilities in code using LLMs.
+* Added taint flow model and type model for `agents` and `openai` modules.
+* Remote flow sources for the `websockets` package have been modeled.
+
+## 6.0.0
+
+### Breaking Changes
+
+* All modules that depend on the points-to analysis have now been removed from the top level `python.qll` module. To access the points-to functionality, import the new `LegacyPointsTo` module. This also means that some predicates have been removed from various classes, for instance `Function.getFunctionObject()`. To access these predicates, import the `LegacyPointsTo` module and use the `FunctionWithPointsTo` class instead. Most cases follow this pattern, but there are a few exceptions:
+  * The `getLiteralObject` method on `ImmutableLiteral` subclasses has been replaced with a predicate `getLiteralObject(ImmutableLiteral l)` in the `LegacyPointsTo` module.
+  * The `getMetrics` method on `Function`, `Class`, and `Module` has been removed. To access metrics, import `LegacyPointsTo` and use the classes `FunctionMetrics`, etc. instead.
+
+### New Features
+
+* The extractor now supports the new, relaxed syntax `except A, B, C: ...` (which would previously have to be written as `except (A, B, C): ...`) as defined in [PEP-758](https://peps.python.org/pep-0758/). This may cause changes in results for code that uses Python 2-style exception binding (`except Foo, e: ...`). The more modern format, `except Foo as e: ...` (available since Python 2.6) is unaffected.
+* The Python extractor now supports template strings as defined in [PEP-750](https://peps.python.org/pep-0750/), through the classes `TemplateString` and `JoinedTemplateString`.
+
+### Minor Analysis Improvements
+
+* When a code-scanning configuration specifies the `paths:` and/or `paths-ignore:` settings, these are now taken into account by the Python extractor's search for YAML files.
+* The `compression.zstd` library (added in Python 3.14) is now supported by the `py/decompression-bomb` query.
+* Added taint flow model and type model for `urllib.parse`.
+* Remote flow sources for the `python-socketio` package have been modeled.
+* Additional models for remote flow sources for `tornado.websocket.WebSocketHandler` have been added.
+
+## 5.0.4
+
+No user-facing changes.
+
+## 5.0.3
+
+No user-facing changes.
+
+## 5.0.2
+
+No user-facing changes.
+
+## 5.0.1
+
+### Bug Fixes
+
+- Fixed a bug in the Python extractor's import handling where failing to find an import in `find_module` would cause a `KeyError` to be raised. (Contributed by @akoeplinger.)
+
+## 5.0.0
+
+### Breaking Changes
+
+- The classes `ControlFlowNode`, `Expr`, and `Module` no longer expose predicates that invoke the points-to analysis. To access these predicates, import the module `LegacyPointsTo` and follow the instructions given therein.
+
+## 4.1.0
+
+### New Features
+
+* Initial support for incremental Python databases via `codeql database create --overlay-base`/`--overlay-changes`.
+
+## 4.0.17
+
+### Bug Fixes
+
+* The Python extractor no longer crashes with an `ImportError` when run using Python 3.14.
+
+## 4.0.16
+
+### Minor Analysis Improvements
+
+* Data flow tracking through global variables now supports nested field access patterns such as `global_var.obj.field`. This improves the precision of taint tracking analysis when data flows through complex global variable structures.
+
+## 4.0.15
+
+No user-facing changes.
+
+## 4.0.14
+
+### Minor Analysis Improvements
+
+- The modelling of Psycopg2 now supports the use of `psycopg2.pool` connection pools for handling database connections.
+* Removed `lxml` as an XML bomb sink. The underlying libxml2 library now includes [entity reference loop detection](https://github.com/lxml/lxml/blob/f33ac2c2f5f9c4c4c1fc47f363be96db308f2fa6/doc/FAQ.txt#L1077) that prevents XML bomb attacks. 
+
+## 4.0.13
+
+No user-facing changes.
+
+## 4.0.12
+
+### Minor Analysis Improvements
+
+* The regular expressions in `SensitiveDataHeuristics.qll` have been extended to find more instances of sensitive data such as secrets used in authentication, finance and health information, and device data. The heuristics have also been refined to find fewer false positive matches. This will improve results for queries related to sensitive information.
+
+## 4.0.11
+
+### Minor Analysis Improvements
+
+* Type annotations such as `foo : Bar` are now treated by the call graph as an indication that `foo` may be an instance of `Bar`.
+
+### Bug Fixes
+
+- The Python parser is now able to correctly parse expressions such as `match[1]` and `match()` where `match` is not used as a keyword.
+
+## 4.0.10
+
+No user-facing changes.
+
+## 4.0.9
+
+No user-facing changes.
+
+## 4.0.8
+
+### Minor Analysis Improvements
+
+- The Python extractor now extracts files in hidden directories by default. If you would like to skip files in hidden directories, add `paths-ignore: ["**/.*/**"]` to your [Code Scanning config](https://docs.github.com/en/code-security/code-scanning/creating-an-advanced-setup-for-code-scanning/customizing-your-advanced-setup-for-code-scanning#specifying-directories-to-scan). If you would like to skip all hidden files, you can use `paths-ignore: ["**/.*"]`. When using the CodeQL CLI for extraction, specify the configuration (creating the configuration file if necessary) using the `--codescanning-config` option.
+
+## 4.0.7
+
+### Minor Analysis Improvements
+
+* Added modeling for the `hdbcli` PyPI package as a database library implementing PEP 249.
+* Added header write model for `send_header` in `http.server`.
+
+## 4.0.6
+
+No user-facing changes.
+
+## 4.0.5
+
+No user-facing changes.
+
+## 4.0.4
+
+### Minor Analysis Improvements
+
+- Added the methods `getMinArguments` and `getMaxArguments` to the `Function` class. These return the minimum and maximum positional arguments that the given function accepts.
+
+### Bug Fixes
+
+- `MatchLiteralPattern`s such as `case None: ...` are now never pruned from the extracted source code. This fixes some situations where code was wrongly identified as unreachable.
+
+## 4.0.3
+
+No user-facing changes.
+
+## 4.0.2
+
+No user-facing changes.
+
+## 4.0.1
+
+### Bug Fixes
+
+- Fixed a bug in the extractor where a comment inside a subscript could sometimes cause the AST to be missing nodes.
+- Using the `break` and `continue` keywords outside of a loop, which is a syntax error but is accepted by our parser, would cause the control-flow construction to fail. This is now no longer the case.
+
+## 4.0.0
+
+### Breaking Changes
+
+* Deleted the old deprecated TypeTracking library.
+* Deleted the deprecated `classRef` predicate from the `FieldStorage` module, use `subclassRef` instead.
+* Deleted a lot of deprecated modules and predicates from `Stdlib.qll`, use API-graphs directly instead.
+
+### Minor Analysis Improvements
+
+* Additional data flow models for the builtin functions `map`, `filter`, `zip`, and `enumerate` have been added.
+
+## 3.1.1
+
+### Minor Analysis Improvements
+
+* The sensitive data library has been improved so that `snake_case` style variable names are recognized more reliably. This may result in more sensitive data being identified, and more results from queries that use the sensitive data library.
+- Additional taint steps through methods of `lxml.etree.Element` and `lxml.etree.ElementTree` objects from the `lxml` PyPI package have been modeled. 
+
+## 3.1.0
+
+### New Features
+
+* Added support for parameter annotations in API graphs. This means that in a function definition such as `def foo(x: Bar): ...`, you can now use the `getInstanceFromAnnotation()` method to step from `Bar` to `x`. In addition to this, the `getAnInstance` method now also includes instances arising from parameter annotations.
+
+### Minor Analysis Improvements
+
+* Added modeling of `fastapi.Request` and `starlette.requests.Request` as sources of untrusted input,
+  and modeling of tainted data flow out of these request objects.
+
+## 3.0.0
+
+### Breaking Changes
+
+* Deleted the old deprecated data flow API that was based on extending a configuration class. See https://github.blog/changelog/2023-08-14-new-dataflow-api-for-writing-custom-codeql-queries for instructions on migrating your queries to use the new API.
+
+### Bug Fixes
+
+- Fixed a problem with the control-flow graph construction, where writing `case True:` or `case False:` would cause parts of the graph to be pruned by mistake.
+
+## 2.2.0
+
+### Major Analysis Improvements
+
+* Added modeling of the `bottle` framework, leading to new remote flow sources and header writes
+
+## 2.1.2
+
+### Minor Analysis Improvements
+
+- Added partial support for the `copy.replace` method, [added](https://docs.python.org/3.13/library/copy.html#copy.replace) in Python 3.13.
+- Added support for type parameter defaults, as specified in [PEP-696](https://peps.python.org/pep-0696/).
+
+## 2.1.1
+
+### Minor Analysis Improvements
+
+* Modelled that `re.finditer` returns an iterable of `re.Match` objects. This is now understood by the API graph in many cases.
+* Type tracking, and hence the API graph, is now able to correctly trace through comprehensions.
+* More precise modelling of the dataflow through comprehensions. In particular, captured variables are now handled correctly.
+* Dataflow out of yield is added, allowing proper tracing through generators.
+* Added several models of standard library functions and classes, in anticipation of no longer extracting the standard library in a future release.
+
+## 2.1.0
+
+### New Features
+
+* Added support for custom threat-models, which can be used in most of our taint-tracking queries, see our [documentation](https://docs.github.com/en/code-security/code-scanning/creating-an-advanced-setup-for-code-scanning/customizing-your-advanced-setup-for-code-scanning#extending-codeql-coverage-with-threat-models) for more details.
+
+### Minor Analysis Improvements
+
+* The common sanitizer guard `StringConstCompareBarrier` has been renamed to `ConstCompareBarrier` and expanded to cover comparisons with other constant values such as `None`. This may result in fewer false positive results for several queries. 
+
+## 2.0.0
+
+### Breaking Changes
+
+* Deleted the deprecated `explorationLimit` predicate from `DataFlow::Configuration`, use `FlowExploration<explorationLimit>` instead.
+* Deleted the deprecated `semmle.python.RegexTreeView` module, use `semmle.python.regexp.RegexTreeView` instead.
+* Deleted the deprecated `RegexString` class from  `regex.qll`.
+* Deleted the deprecated `Regex` class, use `RegExp` instead.
+* Deleted the deprecated `semmle/python/security/SQL.qll` file.
+* Deleted the deprecated `useSSL` predicates from the LDAP libraries, use `useSsl` instead.
+
+## 1.0.7
+
+No user-facing changes.
+
+## 1.0.6
+
+No user-facing changes.
+
+## 1.0.5
+
+### Minor Analysis Improvements
+
+* Added support for `DictionaryElement[<key>]` and `DictionaryElementAny` when Customizing Library Models for `sourceModel` (see https://codeql.github.com/docs/codeql-language-guides/customizing-library-models-for-python/)
+
+## 1.0.4
+
+### Minor Analysis Improvements
+
+* Additional modelling to detect direct writes to the `Set-Cookie` header has been added for several web frameworks.
+
+## 1.0.3
+
+### Minor Analysis Improvements
+
+* A number of Python queries now support sinks defined using data extensions. The format of data extensions for Python has been documented.
+
+## 1.0.2
+
+No user-facing changes.
+
+## 1.0.1
+
+No user-facing changes.
+
 ## 1.0.0
 
 ### Breaking Changes

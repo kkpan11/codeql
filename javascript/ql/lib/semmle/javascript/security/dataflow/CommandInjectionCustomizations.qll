@@ -5,6 +5,7 @@
  */
 
 import javascript
+private import UnsafeShellCommandConstructionCustomizations
 
 module CommandInjection {
   /**
@@ -25,9 +26,16 @@ module CommandInjection {
    */
   abstract class Sanitizer extends DataFlow::Node { }
 
-  /** A source of remote user input, considered as a flow source for command injection. */
-  class RemoteFlowSourceAsSource extends Source instanceof RemoteFlowSource {
-    RemoteFlowSourceAsSource() { not this instanceof ClientSideRemoteFlowSource }
+  /**
+   * DEPRECATED: Use `ActiveThreatModelSource` from Concepts instead!
+   */
+  deprecated class RemoteFlowSourceAsSource = ActiveThreatModelSourceAsSource;
+
+  /**
+   * An active threat-model source, considered as a flow source.
+   */
+  private class ActiveThreatModelSourceAsSource extends Source instanceof ActiveThreatModelSource {
+    ActiveThreatModelSourceAsSource() { not this.isClientSideSource() }
 
     override string getSourceType() { result = "a user-provided value" }
   }
@@ -48,7 +56,24 @@ module CommandInjection {
     SystemCommandExecutionSink() { this = any(SystemCommandExecution sys).getACommandArgument() }
   }
 
+  /** An argument in a `child_process` argument array that is interpreted by a shell. */
+  private class ChildProcessArgumentSink extends Sink {
+    ChildProcessArgumentSink() {
+      exists(UnsafeShellCommandConstruction::ShellTrueCommandExecutionSink sink |
+        this = sink and
+        sink.getCommandExecution() =
+          API::moduleImport(["mz/child_process", "child_process"])
+              .getMember(["execFile", "execFileSync", "spawn", "spawnSync"])
+              .getMaybePromisifiedCall()
+      )
+    }
+  }
+
   private class SinkFromModel extends Sink {
-    SinkFromModel() { this = ModelOutput::getASinkNode("command-injection").asSink() }
+    SinkFromModel() { ModelOutput::sinkNode(this, "command-injection") }
+  }
+
+  private class SanitizerFromModel extends Sanitizer {
+    SanitizerFromModel() { ModelOutput::barrierNode(this, "command-injection") }
   }
 }

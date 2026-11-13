@@ -1,4 +1,5 @@
 import python
+private import LegacyPointsTo
 
 /** A string constant that looks like it may be used in string formatting operations. */
 class PossibleAdvancedFormatString extends StringLiteral {
@@ -97,12 +98,18 @@ private predicate brace_pair(PossibleAdvancedFormatString fmt, int start, int en
 }
 
 private predicate advanced_format_call(Call format_expr, PossibleAdvancedFormatString fmt, int args) {
-  exists(CallNode call | call = format_expr.getAFlowNode() |
-    call.getFunction().pointsTo(Value::named("format")) and
-    call.getArg(0).pointsTo(_, fmt.getAFlowNode()) and
+  exists(CallNode call, ControlFlowNode fmtCfg |
+    call.getNode() = format_expr and fmtCfg.getNode() = fmt
+  |
+    call.getFunction().(ControlFlowNodeWithPointsTo).pointsTo(Value::named("format")) and
+    call.getArg(0).(ControlFlowNodeWithPointsTo).pointsTo(_, fmtCfg) and
     args = count(format_expr.getAnArg()) - 1
     or
-    call.getFunction().(AttrNode).getObject("format").pointsTo(_, fmt.getAFlowNode()) and
+    call.getFunction()
+        .(AttrNode)
+        .getObject("format")
+        .(ControlFlowNodeWithPointsTo)
+        .pointsTo(_, fmtCfg) and
     args = count(format_expr.getAnArg())
   )
 }

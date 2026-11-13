@@ -6,23 +6,24 @@
  * @problem.severity warning
  * @precision medium
  * @id cs/misleading-indentation
- * @tags changeability
+ * @tags quality
+ *       maintainability
+ *       readability
  *       correctness
- *       logic
  */
 
 import csharp
 
 // Iterate the control flow until we reach a Stmt
-Stmt findSuccessorStmt(ControlFlow::Node n) {
-  result = n.getAstNode()
+Stmt findSuccessorStmt(ControlFlowNode n) {
+  result = n.asStmt()
   or
-  not n.getAstNode() instanceof Stmt and result = findSuccessorStmt(n.getASuccessor())
+  not exists(n.asStmt()) and result = findSuccessorStmt(n.getASuccessor())
 }
 
 // Return a successor statement to s
 Stmt getASuccessorStmt(Stmt s) {
-  result = findSuccessorStmt(s.getAControlFlowNode().getASuccessor())
+  result = findSuccessorStmt(s.getControlFlowNode().getASuccessor())
 }
 
 class IfThenStmt extends IfStmt {
@@ -35,7 +36,7 @@ class IfThenElseStmt extends IfStmt {
 
 Stmt getTrailingBody(Stmt s) {
   result = s.(ForStmt).getBody() or
-  result = s.(ForeachStmt).getBody() or
+  result = s.(ForEachStmt).getBody() or
   result = s.(WhileStmt).getBody() or
   result = s.(IfThenStmt).getThen() or
   result = s.(IfThenElseStmt).getElse()

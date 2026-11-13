@@ -1,8 +1,8 @@
 import python
 import semmle.python.dataflow.new.TaintTracking
 import semmle.python.ApiGraphs
-import semmle.python.dataflow.new.RemoteFlowSources
 import semmle.python.dataflow.new.internal.DataFlowPublic
+import semmle.python.Concepts
 import FileAndFormRemoteFlowSource::FileAndFormRemoteFlowSource
 import codeql.util.Unit
 
@@ -364,6 +364,46 @@ module Lzma {
   }
 }
 
+/** Provides sinks and additional taint steps related to the `zstd` library in Python 3.14+. */
+module Zstd {
+  private API::Node zstdInstance() {
+    result = API::moduleImport("compression").getMember("zstd").getMember(["ZstdFile", "open"])
+  }
+
+  /**
+   * The Decompression Sinks of `zstd` library
+   *
+   * `zstd.open(sink)`
+   * `zstd.ZstdFile(sink)`
+   *
+   * only read mode is sink
+   */
+  class DecompressionSink extends DecompressionBomb::Sink {
+    DecompressionSink() {
+      exists(API::CallNode zstdCall | zstdCall = zstdInstance().getACall() |
+        this = zstdCall.getParameter(0, "file").asSink() and
+        (
+          not exists(
+            zstdCall
+                .getParameter(1, "mode")
+                .getAValueReachingSink()
+                .asExpr()
+                .(StringLiteral)
+                .getText()
+          ) or
+          zstdCall
+              .getParameter(1, "mode")
+              .getAValueReachingSink()
+              .asExpr()
+              .(StringLiteral)
+              .getText()
+              .matches("%r%")
+        )
+      )
+    }
+  }
+}
+
 /**
  * `io.TextIOWrapper(ip, encoding='utf-8')` like following:
  * ```python
@@ -386,7 +426,7 @@ predicate isAdditionalTaintStepTextIOWrapper(DataFlow::Node nodeFrom, DataFlow::
 
 module BombsConfig implements DataFlow::ConfigSig {
   predicate isSource(DataFlow::Node source) {
-    source instanceof RemoteFlowSource
+    source instanceof ActiveThreatModelSource
     or
     source instanceof FastApi
   }
@@ -408,6 +448,8 @@ module BombsConfig implements DataFlow::ConfigSig {
       isAdditionalTaintStepTextIOWrapper(pred, succ)
     )
   }
+
+  predicate observeDiffInformedIncrementalMode() { any() }
 }
 
 module BombsFlow = TaintTracking::Global<BombsConfig>;

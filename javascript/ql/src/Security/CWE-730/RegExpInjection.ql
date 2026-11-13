@@ -9,15 +9,14 @@
  * @precision high
  * @id js/regex-injection
  * @tags security
- *       external/cwe/cwe-730
  *       external/cwe/cwe-400
  */
 
 import javascript
 import semmle.javascript.security.dataflow.RegExpInjectionQuery
-import DataFlow::PathGraph
+import RegExpInjectionFlow::PathGraph
 
-from Configuration cfg, DataFlow::PathNode source, DataFlow::PathNode sink
-where cfg.hasFlowPath(source, sink)
+from RegExpInjectionFlow::PathNode source, RegExpInjectionFlow::PathNode sink
+where RegExpInjectionFlow::flowPath(source, sink)
 select sink.getNode(), source, sink, "This regular expression is constructed from a $@.",
   source.getNode(), source.getNode().(Source).describe()

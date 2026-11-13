@@ -14,6 +14,8 @@
  * (intraprocedural) data flow, invoke `DataFlow::localFlow` or
  * `DataFlow::LocalFlowStep` with arguments of type `DataFlow::Node`.
  */
+overlay[local?]
+module;
 
 import go
 
@@ -25,7 +27,7 @@ module DataFlow {
   private import semmle.go.dataflow.internal.DataFlowImplSpecific
   private import codeql.dataflow.DataFlow
   import DataFlowMake<Location, GoDataFlow>
-  import semmle.go.dataflow.internal.DataFlowImpl1
+  import Public
   import Properties
 }
 

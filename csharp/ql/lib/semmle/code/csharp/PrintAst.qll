@@ -32,7 +32,9 @@ private predicate shouldPrint(Element e, Location l) {
 }
 
 private predicate isImplicitExpression(ControlFlowElement element) {
-  element.(Expr).isImplicit() and
+  // Include compiler generated cast expressions and `ToString` calls if
+  // they wrap actual source expressions.
+  element.(Expr).stripImplicit().isImplicit() and
   not element instanceof CastExpr and
   not element.(OperatorCall).getTarget() instanceof ImplicitConversionOperator and
   not element instanceof ElementInitializer
@@ -297,7 +299,9 @@ class ControlFlowElementNode extends ElementNode {
     not isNotNeeded(element.getParent+()) and
     // LambdaExpr is both a Callable and a ControlFlowElement,
     // print it with the more specific CallableNode
-    not element instanceof Callable
+    not element instanceof Callable and
+    // Handled in `ParameterNode`
+    not element instanceof Parameter
   }
 
   override PrintAstNode getChild(int childIndex) {
@@ -341,10 +345,10 @@ final class AssignmentNode extends ControlFlowElementNode {
     result.(TypeMentionNode).getTarget() = controlFlowElement
     or
     childIndex = 0 and
-    result.(ElementNode).getElement() = assignment.getLValue()
+    result.(ElementNode).getElement() = assignment.getLeftOperand()
     or
     childIndex = 1 and
-    result.(ElementNode).getElement() = assignment.getRValue()
+    result.(ElementNode).getElement() = assignment.getRightOperand()
   }
 }
 
@@ -521,11 +525,9 @@ final class AttributeNode extends ElementNode {
  * A node representing a `TypeParameter`.
  */
 final class TypeParameterNode extends ElementNode {
-  TypeParameter typeParameter;
-
   TypeParameterNode() {
-    typeParameter = element and
-    not isNotNeeded(typeParameter.getDeclaringGeneric())
+    element =
+      any(TypeParameter typeParameter | not isNotNeeded(typeParameter.getDeclaringGeneric()))
   }
 
   override ElementNode getChild(int childIndex) { none() }

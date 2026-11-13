@@ -453,7 +453,7 @@ is_arguments_object (int id: @variable ref);
 
 @lexical_name = @variable | @local_type_name | @local_namespace_name;
 
-@bind_id = @varaccess | @local_var_type_access;
+@bind_id = @varaccess | @local_var_type_access | @this_expr;
 bind (unique int id: @bind_id ref,
       int decl: @variable ref);
 
@@ -516,6 +516,7 @@ has_private_keyword (int id: @property ref);
 has_protected_keyword (int id: @property ref);
 has_readonly_keyword (int id: @property ref);
 has_type_keyword (int id: @type_keyword_operand ref);
+has_defer_keyword (int id: @import_declaration ref);
 is_optional_member (int id: @property ref);
 has_definite_assignment_assertion (int id: @field_or_vardeclarator ref);
 is_optional_parameter_declaration (unique int parameter: @pattern ref);
@@ -859,7 +860,10 @@ case @regexpterm.kind of
 | 24 = @regexp_char_range
 | 25 = @regexp_positive_lookbehind
 | 26 = @regexp_negative_lookbehind
-| 27 = @regexp_unicode_property_escape;
+| 27 = @regexp_unicode_property_escape
+| 28 = @regexp_quoted_string
+| 29 = @regexp_intersection
+| 30 = @regexp_subtraction;
 
 regexp_parse_errors (unique int id: @regexp_parse_error,
     int regexp: @regexpterm ref,
@@ -998,7 +1002,7 @@ case @jsdoc_type_expr.kind of
 |   2 = @jsdoc_undefined_type_expr
 |   3 = @jsdoc_unknown_type_expr
 |   4 = @jsdoc_void_type_expr
-|   5 = @jsdoc_named_type_expr
+|   5 = @jsdoc_identifier_type_expr
 |   6 = @jsdoc_applied_type_expr
 |   7 = @jsdoc_nullable_type_expr
 |   8 = @jsdoc_non_nullable_type_expr
@@ -1008,6 +1012,7 @@ case @jsdoc_type_expr.kind of
 |  12 = @jsdoc_function_type_expr
 |  13 = @jsdoc_optional_type_expr
 |  14 = @jsdoc_rest_type_expr
+|  15 = @jsdoc_qualified_type_expr
 ;
 
 #keyset[id, idx]
@@ -1085,13 +1090,17 @@ yaml_scalars (unique int scalar: @yaml_scalar_node ref,
               int style: int ref,
               string value: string ref);
 
+yaml_comments (unique int id: @yaml_comment,
+               string text: string ref,
+               string tostring: string ref);
+
 yaml_errors (unique int id: @yaml_error,
              string message: string ref);
 
 yaml_locations(unique int locatable: @yaml_locatable ref,
              int location: @location_default ref);
 
-@yaml_locatable = @yaml_node | @yaml_error;
+@yaml_locatable = @yaml_node | @yaml_error | @yaml_comment;
 
 /*- XML Files -*/
 
@@ -1188,3 +1197,25 @@ configLocations(
 );
 
 @configLocatable = @config | @configName | @configValue;
+
+/*- Database metadata -*/
+
+/**
+ * The CLI will automatically emit applicable tuples for this table,
+ * such as `databaseMetadata("isOverlay", "true")` when building an
+ * overlay database.
+ */
+databaseMetadata(
+  string metadataKey: string ref,
+  string value: string ref
+);
+
+/*- Overlay support -*/
+
+/**
+ * The CLI will automatically emit tuples for each new/modified/deleted file
+ * when building an overlay database.
+ */
+overlayChangedFiles(
+  string path: string ref
+);

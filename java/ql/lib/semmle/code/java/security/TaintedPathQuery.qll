@@ -12,7 +12,7 @@ private import semmle.code.java.security.Sanitizers
 abstract class TaintedPathSink extends DataFlow::Node { }
 
 private class DefaultTaintedPathSink extends TaintedPathSink {
-  DefaultTaintedPathSink() { sinkNode(this, "path-injection") }
+  DefaultTaintedPathSink() { sinkNode(this, ["path-injection", "path-injection[read]"]) }
 }
 
 /**
@@ -60,7 +60,7 @@ private class TaintPreservingUriCtorParam extends Parameter {
  * A taint-tracking configuration for tracking flow from remote sources to the creation of a path.
  */
 module TaintedPathConfig implements DataFlow::ConfigSig {
-  predicate isSource(DataFlow::Node source) { source instanceof ThreatModelFlowSource }
+  predicate isSource(DataFlow::Node source) { source instanceof ActiveThreatModelSource }
 
   predicate isSink(DataFlow::Node sink) { sink instanceof TaintedPathSink }
 
@@ -72,32 +72,9 @@ module TaintedPathConfig implements DataFlow::ConfigSig {
   predicate isAdditionalFlowStep(DataFlow::Node n1, DataFlow::Node n2) {
     any(TaintedPathAdditionalTaintStep s).step(n1, n2)
   }
+
+  predicate observeDiffInformedIncrementalMode() { any() }
 }
 
 /** Tracks flow from remote sources to the creation of a path. */
 module TaintedPathFlow = TaintTracking::Global<TaintedPathConfig>;
-
-/**
- * A taint-tracking configuration for tracking flow from local user input to the creation of a path.
- */
-deprecated module TaintedPathLocalConfig implements DataFlow::ConfigSig {
-  predicate isSource(DataFlow::Node source) { source instanceof LocalUserInput }
-
-  predicate isSink(DataFlow::Node sink) { sink instanceof TaintedPathSink }
-
-  predicate isBarrier(DataFlow::Node sanitizer) {
-    sanitizer instanceof SimpleTypeSanitizer or
-    sanitizer instanceof PathInjectionSanitizer
-  }
-
-  predicate isAdditionalFlowStep(DataFlow::Node n1, DataFlow::Node n2) {
-    any(TaintedPathAdditionalTaintStep s).step(n1, n2)
-  }
-}
-
-/**
- * DEPRECATED: Use `TaintedPathFlow` instead and configure threat model sources to include `local`.
- *
- * Tracks flow from local user input to the creation of a path.
- */
-deprecated module TaintedPathLocalFlow = TaintTracking::Global<TaintedPathLocalConfig>;

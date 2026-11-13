@@ -1,12 +1,15 @@
 /**
  * Provides predicates and classes relating to encryption in Java.
  */
+overlay[local?]
+module;
 
 import java
 
 class SslClass extends RefType {
   SslClass() {
     exists(Class c | this.getAnAncestor() = c |
+      // Note there are no jakarta equivalents of these classes.
       c.hasQualifiedName("javax.net.ssl", _) or
       c.hasQualifiedName("javax.rmi.ssl", _)
     )
@@ -186,7 +189,8 @@ bindingset[algorithmString]
 private string algorithmRegex(string algorithmString) {
   // Algorithms usually appear in names surrounded by characters that are not
   // alphabetical characters in the same case. This handles the upper and lower
-  // case cases.
+  // case cases, plus mixed-case algorithm strings bounded by non-alphabetic
+  // characters (such as `AES/cbc/Pkcs5Padding`).
   result =
     "((^|.*[^A-Z])(" + algorithmString + ")([^A-Z].*|$))" +
       // or...
@@ -194,23 +198,38 @@ private string algorithmRegex(string algorithmString) {
       // For lowercase, we want to be careful to avoid being confused by camelCase
       // hence we require two preceding uppercase letters to be sure of a case switch,
       // or a preceding non-alphabetic character
-      "((^|.*[A-Z]{2}|.*[^a-zA-Z])(" + algorithmString.toLowerCase() + ")([^a-z].*|$))"
+      "((^|.*[A-Z]{2}|.*[^a-zA-Z])(" + algorithmString.toLowerCase() + ")([^a-z].*|$))" +
+      // or...
+      "|" + "((^|.*[^a-zA-Z])(?i)(" + algorithmString + ")([^a-zA-Z].*|$))"
 }
 
 /**
- * Gets the name of an algorithm that is known to be insecure.
+ * Holds if `name` is the name of an algorithm that is known to be insecure and
+ * `reason` explains why it is insecure.
  */
-string getAnInsecureAlgorithmName() {
-  result =
-    [
-      "DES", "RC2", "RC4", "RC5",
-      // ARCFOUR is a variant of RC4
-      "ARCFOUR",
-      // Encryption mode ECB like AES/ECB/NoPadding is vulnerable to replay and other attacks
-      "ECB",
-      // CBC mode of operation with PKCS#5 or PKCS#7 padding is vulnerable to padding oracle attacks
-      "AES/CBC/PKCS[57]Padding"
-    ]
+predicate insecureAlgorithm(string name, string reason) {
+  name = "DES" and
+  reason =
+    "It has a short key length of 56 bits, making it vulnerable to brute-force attacks. Consider using AES instead."
+  or
+  name = "RC2" and
+  reason = "It is vulnerable to related-key attacks. Consider using AES instead."
+  or
+  // ARCFOUR is a variant of RC4
+  name = ["RC4", "ARCFOUR"] and
+  reason =
+    "It has multiple vulnerabilities, including biases in its output and susceptibility to several attacks. Consider using AES instead."
+  or
+  name = "RC5" and
+  reason = "It is vulnerable to differential and related-key attacks. Consider using AES instead."
+  or
+  name = "ECB" and
+  reason =
+    "ECB mode, as in AES/ECB/NoPadding for example, is vulnerable to replay and other attacks. Consider using GCM instead."
+  or
+  name = "AES/CBC/PKCS[57]Padding" and
+  reason =
+    "CBC mode with PKCS#5 or PKCS#7 padding is vulnerable to padding oracle attacks. Consider using GCM instead."
 }
 
 /**
@@ -222,25 +241,18 @@ string getAnInsecureHashAlgorithmName() {
   result = "MD5"
 }
 
-private string rankedInsecureAlgorithm(int i) {
-  // In this case we know these are being used for encryption, so we want to match
-  // weak hash algorithms too.
-  result =
-    rank[i](string s | s = getAnInsecureAlgorithmName() or s = getAnInsecureHashAlgorithmName())
-}
-
-private string insecureAlgorithmString(int i) {
-  i = 1 and result = rankedInsecureAlgorithm(i)
-  or
-  result = rankedInsecureAlgorithm(i) + "|" + insecureAlgorithmString(i - 1)
-}
-
 /**
  * Gets the regular expression used for matching strings that look like they
  * contain an algorithm that is known to be insecure.
  */
 string getInsecureAlgorithmRegex() {
-  result = algorithmRegex(insecureAlgorithmString(max(int i | exists(rankedInsecureAlgorithm(i)))))
+  result = algorithmRegex(concat(string name | insecureAlgorithm(name, _) | name, "|"))
+}
+
+/** Gets the reason why `input` is an insecure algorithm, if any. */
+bindingset[input]
+string getInsecureAlgorithmReason(string input) {
+  exists(string name | insecureAlgorithm(name, result) | input.regexpMatch(algorithmRegex(name)))
 }
 
 /**
@@ -249,26 +261,28 @@ string getInsecureAlgorithmRegex() {
 string getASecureAlgorithmName() {
   result =
     [
-      "RSA", "SHA-?256", "SHA-?512", "CCM", "GCM", "AES(?![^a-zA-Z](ECB|CBC/PKCS[57]Padding))",
-      "Blowfish", "ECIES"
+      "RSA", "SHA-?(256|384|512)", "CCM", "GCM", "AES(?![^a-zA-Z](?i)(ECB|CBC/PKCS[57]Padding))",
+      "Blowfish", "ECIES", "SHA3-(256|384|512)",
+      // Elliptic Curve algorithms: EC (key generation), ECDSA (signatures), ECDH (key agreement),
+      // EdDSA/Ed25519/Ed448 (Edwards-curve signatures), XDH/X25519/X448 (key agreement).
+      // These are modern, secure algorithms recommended by NIST and other standards bodies.
+      "EC", "ECDSA", "ECDH", "EdDSA", "Ed25519", "Ed448", "XDH", "X25519", "X448",
+      // HMAC-based algorithms and key derivation functions.
+      "HMACSHA(1|256|384|512)", "HmacSHA(1|256|384|512)", "PBKDF2"
     ]
 }
 
 private string rankedSecureAlgorithm(int i) { result = rank[i](getASecureAlgorithmName()) }
 
-private string secureAlgorithmString(int i) {
-  i = 1 and result = rankedSecureAlgorithm(i)
-  or
-  result = rankedSecureAlgorithm(i) + "|" + secureAlgorithmString(i - 1)
+private string secureAlgorithmString() {
+  result = concat(int i | | rankedSecureAlgorithm(i), "|" order by i desc)
 }
 
 /**
  * Gets a regular expression for matching strings that look like they
  * contain an algorithm that is known to be secure.
  */
-string getSecureAlgorithmRegex() {
-  result = algorithmRegex(secureAlgorithmString(max(int i | exists(rankedSecureAlgorithm(i)))))
-}
+string getSecureAlgorithmRegex() { result = algorithmRegex(secureAlgorithmString()) }
 
 /**
  * Any use of a cryptographic element that specifies an encryption
@@ -357,9 +371,13 @@ class JavaSecuritySignature extends JavaSecurityAlgoSpec {
     exists(Constructor c | c.getAReference() = this |
       c.getDeclaringType().hasQualifiedName("java.security", "Signature")
     )
+    or
+    exists(Method m | m.getAReference() = this |
+      m.hasQualifiedName("java.security", "Signature", "getInstance")
+    )
   }
 
-  override Expr getAlgoSpec() { result = this.(ConstructorCall).getArgument(0) }
+  override Expr getAlgoSpec() { result = this.(Call).getArgument(0) }
 }
 
 /** A call to the `getInstance` method declared in `java.security.KeyPairGenerator`. */

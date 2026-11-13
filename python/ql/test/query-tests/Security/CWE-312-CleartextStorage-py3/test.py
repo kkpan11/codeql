@@ -1,15 +1,15 @@
 import pathlib
 
 
-def get_cert():
-    return "<CERT>"
+def get_password():
+    return "password"
 
 
 def write_password(filename):
-    cert = get_cert()
+    password = get_password() # $ Source
 
     path = pathlib.Path(filename)
-    path.write_text(cert) # NOT OK
-    path.write_bytes(cert.encode("utf-8")) # NOT OK
+    path.write_text(password) # $ Alert # NOT OK
+    path.write_bytes(password.encode("utf-8")) # $ Alert # NOT OK
 
-    path.open("w").write(cert) # NOT OK
+    path.open("w").write(password) # $ Alert # NOT OK

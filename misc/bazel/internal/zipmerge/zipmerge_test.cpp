@@ -9,9 +9,9 @@
 
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
-#include "tools/cpp/runfiles/runfiles.h"
+#include "rules_cc/cc/runfiles/runfiles.h"
 
-using bazel::tools::cpp::runfiles::Runfiles;
+using rules_cc::cc::runfiles::Runfiles;
 using namespace std::string_literals;
 namespace fs = std::filesystem;
 
@@ -75,7 +75,7 @@ std::string get_file(const char* name) {
     return ret;
   }();
   // this works from both `codeql` and the internal repository
-  for (auto prefix : {"_main", "codeql~"}) {
+  for (auto prefix : {"_main", "ql+"}) {
     auto ret = runfiles->Rlocation(prefix + "/misc/bazel/internal/zipmerge/test-files/"s + name);
     if (fs::exists(ret)) {
       return ret;

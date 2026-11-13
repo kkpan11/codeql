@@ -26,9 +26,9 @@ void test_custom_printf()
 {
 	myClass mc;
 
-	mc.myPrintf("%i%i", 1); // BAD (too few format arguments)
+	mc.myPrintf("%i%i", 1); // $ Alert[cpp/wrong-number-format-arguments] // BAD (too few format arguments)
 	mc.myPrintf("%i%i", 1, 2); // GOOD
-	mc.myPrintf("%i%i", 1, 2, 3); // BAD (too many format arguments)
+	mc.myPrintf("%i%i", 1, 2, 3); // $ Alert[cpp/too-many-format-arguments] // BAD (too many format arguments)
 	mc.myPrintf(NULL, 1, 2, 3); // GOOD (should not be analyzed)
 }
 
@@ -44,3 +44,5 @@ void test_custom_printf2()
 	printf("",           "%i %i",  100, 200); // GOOD
 	printf("%i %i",      ""        );         // GOOD
 }
+
+extern "C" void my_logger(int param, char *fmt, ...) __attribute__((format(printf, 2, 3))) {}

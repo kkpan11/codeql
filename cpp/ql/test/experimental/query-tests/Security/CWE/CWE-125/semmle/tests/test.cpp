@@ -6,7 +6,7 @@ int wprintf (const wchar_t* format, ...);
 int strlen( const char * string );
 int checkErrors();
 
-void goodTest0()
+static void goodTest0()
 {
   char * ptr = "123456789";
   int ret;
@@ -17,7 +17,7 @@ void goodTest0()
     ptr += ret;
   }
 }
-void goodTest1(const char* ptr)
+static void goodTest1(const char* ptr)
 {
   int ret;
   int len;
@@ -27,7 +27,7 @@ void goodTest1(const char* ptr)
     ptr += ret;
   }
 }
-void goodTest2(char* ptr)
+static void goodTest2(char* ptr)
 {
   int ret;
   ptr[10]=0;
@@ -38,7 +38,7 @@ void goodTest2(char* ptr)
   }
 }
 
-void goodTest3(const char* ptr)
+static void goodTest3(const char* ptr)
 {
   int ret;
   int len;
@@ -48,7 +48,7 @@ void goodTest3(const char* ptr)
     ptr += ret;
   }
 }
-void goodTest4(const char* ptr)
+static void goodTest4(const char* ptr)
 {
   int ret;
   int len;
@@ -58,28 +58,28 @@ void goodTest4(const char* ptr)
     ptr += ret;
   }
 }
-void badTest1(const char* ptr)
+static void badTest1(const char* ptr)
 {
   int ret;
   int len;
   len = strlen(ptr);
-  for (wchar_t wc; (ret = mbtowc(&wc, ptr, 4)) > 0; len-=ret) { // BAD:we can get unpredictable results
+  for (wchar_t wc; (ret = mbtowc(&wc, ptr, 4)) > 0; len-=ret) { // $ Alert // BAD:we can get unpredictable results
     wprintf(L"%lc", wc);
     ptr += ret;
   }
 }
-void badTest2(const char* ptr)
+static void badTest2(const char* ptr)
 {
   int ret;
   int len;
   len = strlen(ptr);
-  for (wchar_t wc; (ret = mbtowc(&wc, ptr, sizeof(wchar_t))) > 0; len-=ret) { // BAD:we can get unpredictable results
+  for (wchar_t wc; (ret = mbtowc(&wc, ptr, sizeof(wchar_t))) > 0; len-=ret) { // $ Alert // BAD:we can get unpredictable results
     wprintf(L"%lc", wc);
     ptr += ret;
   }
 }
 
-void goodTest5(const char* ptr,wchar_t *wc,int wc_len)
+static void goodTest5(const char* ptr,wchar_t *wc,int wc_len)
 {
   int ret;
   int len;
@@ -96,14 +96,14 @@ void goodTest5(const char* ptr,wchar_t *wc,int wc_len)
   }
 }
 
-void badTest3(const char* ptr,int wc_len)
+static void badTest3(const char* ptr,int wc_len)
 {
   int ret;
   int len;
   len = wc_len;
   wchar_t *wc = new wchar_t[wc_len];
   while (*ptr && len > 0) {
-    ret = mbtowc(wc, ptr, MB_CUR_MAX); // BAD
+    ret = mbtowc(wc, ptr, MB_CUR_MAX); // $ Alert // BAD
     if (ret <0)
       break;
     if (ret == 0 || ret > len)
@@ -113,14 +113,14 @@ void badTest3(const char* ptr,int wc_len)
     wc++;
   }
 }
-void badTest4(const char* ptr,int wc_len)
+static void badTest4(const char* ptr,int wc_len)
 {
   int ret;
   int len;
   len = wc_len;
   wchar_t *wc = new wchar_t[wc_len];
   while (*ptr && len > 0) {
-    ret = mbtowc(wc, ptr, 16); // BAD
+    ret = mbtowc(wc, ptr, 16); // $ Alert // BAD
     if (ret <0)
       break;
     if (ret == 0 || ret > len)
@@ -130,14 +130,14 @@ void badTest4(const char* ptr,int wc_len)
     wc++;
   }
 }
-void badTest5(const char* ptr,int wc_len)
+static void badTest5(const char* ptr,int wc_len)
 {
   int ret;
   int len;
   len = wc_len;
   wchar_t *wc = new wchar_t[wc_len];
   while (*ptr && len > 0) {
-    ret = mbtowc(wc, ptr, sizeof(wchar_t)); // BAD
+    ret = mbtowc(wc, ptr, sizeof(wchar_t)); // $ Alert // BAD
     if (ret <0)
       break;
     if (ret == 0 || ret > len)
@@ -148,14 +148,14 @@ void badTest5(const char* ptr,int wc_len)
   }
 }
 
-void badTest6(const char* ptr,int wc_len)
+static void badTest6(const char* ptr,int wc_len)
 {
   int ret;
   int len;
   len = wc_len;
   wchar_t *wc = new wchar_t[wc_len];
   while (*ptr && wc_len > 0) {
-    ret = mbtowc(wc, ptr, wc_len); // BAD
+    ret = mbtowc(wc, ptr, wc_len); // $ Alert // BAD
     if (ret <0)
       if (checkErrors()) {
         ++ptr;
@@ -171,14 +171,14 @@ void badTest6(const char* ptr,int wc_len)
     ptr+=ret;
   }
 }
-void badTest7(const char* ptr,int wc_len)
+static void badTest7(const char* ptr,int wc_len)
 {
   int ret;
   int len;
   len = wc_len;
   wchar_t *wc = new wchar_t[wc_len];
   while (*ptr && wc_len > 0) {
-    ret = mbtowc(wc, ptr, len); // BAD
+    ret = mbtowc(wc, ptr, len); // $ Alert // BAD
     if (ret <0)
         break;
     if (ret == 0 || ret > len)
@@ -188,13 +188,13 @@ void badTest7(const char* ptr,int wc_len)
     ptr+=ret;
   }
 }
-void badTest8(const char* ptr,wchar_t *wc)
+static void badTest8(const char* ptr,wchar_t *wc)
 {
   int ret;
   int len;
   len = strlen(ptr);
   while (*ptr && len > 0) {
-    ret = mbtowc(wc, ptr, len); // BAD
+    ret = mbtowc(wc, ptr, len); // $ Alert // BAD
     if (ret <0)
       break;
     if (ret == 0 || ret > len)

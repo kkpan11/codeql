@@ -1,7 +1,12 @@
 common --enable_platform_specific_config
-common --enable_bzlmod
 # because we use --override_module with `%workspace%`, the lock file is not stable
 common --lockfile_mode=off
+
+# Build release binaries by default, can be overwritten to in local.bazelrc and set to `fastbuild` or `dbg`
+build --compilation_mode opt
+
+# Preserve CodeQL's placeholder during rules_pkg variable substitution.
+build --define=CODEQL_PLATFORM={CODEQL_PLATFORM}
 
 # when building from this repository in isolation, the internal repository will not be found at ..
 # where `MODULE.bazel` looks for it. The following will get us past the module loading phase, so
@@ -9,7 +14,15 @@ common --lockfile_mode=off
 common --override_module=semmle_code=%workspace%/misc/bazel/semmle_code_stub
 
 build --repo_env=CC=clang --repo_env=CXX=clang++
+# The standalone Linux toolchain uses gold, which does not support the
+# LLD-specific -z nostart-stop-gc workaround enabled by rules_swift.
+build:linux --features=-swift.lld_gc_workaround
+# Disable Android SDK auto-detection (we don't use it, and rules_android has Bazel 9 compatibility issues)
+build --repo_env=ANDROID_HOME=
 
+# print test output, like sembuild does.
+# Set to `errors` if this is too verbose.
+test --test_output all
 # we use transitions that break builds of `...`, so for `test` to work with that we need the following
 test --build_tests_only
 
@@ -24,5 +37,19 @@ common --registry=file:///%workspace%/misc/bazel/registry
 common --registry=https://bcr.bazel.build
 
 common --@rules_dotnet//dotnet/settings:strict_deps=false
+
+# we only configure a nightly toolchain
+common --@rules_rust//rust/toolchain/channel=nightly
+
+# Reduce this eventually to empty, once we've fixed all our usages of java, and https://github.com/bazel-contrib/rules_go/issues/4193 is fixed
+common --incompatible_autoload_externally="+@rules_cc,+@rules_java,+@rules_shell"
+
+build --java_language_version=17
+build --tool_java_language_version=17
+build --tool_java_runtime_version=remotejdk_17
+build --java_runtime_version=remotejdk_17
+build --@rules_python//python/config_settings:python_version=3.12
+# Disable legacy Python initializer generation, including in external build tools.
+build --incompatible_default_to_explicit_init_py
 
 try-import %workspace%/local.bazelrc

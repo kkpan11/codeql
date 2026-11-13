@@ -5,7 +5,8 @@
  * @problem.severity recommendation
  * @precision high
  * @id java/local-variable-is-never-read
- * @tags maintainability
+ * @tags quality
+ *       maintainability
  *       useless-code
  *       external/cwe/cwe-561
  */
@@ -31,5 +32,7 @@ where
     f.getVariable().getVariable() = v and
     f.getExpr().getType().(RefType).hasQualifiedName("kotlin.ranges", ["IntRange", "LongRange"])
   ) and
+  // Unnamed variables (`_`) cannot be read.
+  not v.getDeclExpr().isAnonymous() and
   not readImplicitly(v)
 select v, "Variable '" + v + "' is never read."

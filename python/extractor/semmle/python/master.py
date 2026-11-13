@@ -186,11 +186,19 @@ FormattedStringLiteral.set_name("Fstring")
 
 FormattedValue = ClassNode("FormattedValue", expr, descriptive_name='formatted value')
 
+
 AnnAssign = ClassNode("AnnAssign", stmt, descriptive_name='annotated assignment')
 
 AssignExpr = ClassNode('AssignExpr', expr, "assignment expression")
 
 SpecialOperation = ClassNode('SpecialOperation', expr, "special operation")
+
+TemplateString = ClassNode('TemplateString', expr, 'template string literal')
+
+template_string_list = ListNode(TemplateString)
+
+JoinedTemplateString = ClassNode("JoinedTemplateString", expr, descriptive_name='joined template string')
+TemplateStringPart = ClassNode('TemplateStringPart', expr, "string part of a template string")
 
 type_parameter = ClassNode('type_parameter', descriptive_name='type parameter')
 type_parameter.field('location', location)
@@ -326,9 +334,11 @@ IfExp.field('body', expr, 'if-true expression')
 IfExp.field('orelse', expr, 'if-false expression')
 
 Import.field('names', alias_list, 'alias list')
+Import.field('is_lazy', bool_, 'lazy')
 
 ImportFrom.set_name('ImportStar')
 ImportFrom.field('module', expr)
+ImportFrom.field('is_lazy', bool_, 'lazy')
 
 ImportMember.field('module', expr)
 ImportMember.field('name', string)
@@ -397,6 +407,7 @@ Num.field('n', number, 'value')
 Num.field('text', number)
 
 ParamSpec.field('name', expr)
+ParamSpec.field('default', expr)
 
 Print.field('dest', expr, 'destination')
 Print.field('values', expr_list)
@@ -434,6 +445,9 @@ Subscript.field('value', expr)
 Subscript.field('index', expr)
 Subscript.field('ctx', expr_context, 'context')
 
+TemplateString.field('prefix', string, 'prefix')
+TemplateString.field('values', expr_list, 'values')
+
 Try.field('body', stmt_list)
 Try.field('orelse', stmt_list, 'else block')
 Try.field('handlers', stmt_list, 'exception handlers')
@@ -448,8 +462,10 @@ TypeAlias.field('value', expr)
 
 TypeVar.field('name', expr)
 TypeVar.field('bound', expr)
+TypeVar.field('default', expr)
 
 TypeVarTuple.field('name', expr)
+TypeVarTuple.field('default', expr)
 
 UnaryOp.field('op', unaryop, 'operator')
 UnaryOp.field('operand', expr)
@@ -481,9 +497,14 @@ PlaceHolder.field('ctx', expr_context, 'context')
 StringPart.field('text', string)
 StringPart.field('location', location)
 
+TemplateStringPart.field('text', string)
+
+
 Await.field('value', expr, 'expression waited upon')
 
 FormattedStringLiteral.field('values', expr_list)
+
+JoinedTemplateString.field('strings', template_string_list)
 
 FormattedValue.field('value', expr, "expression to be formatted")
 FormattedValue.field('conversion', string, 'type conversion')

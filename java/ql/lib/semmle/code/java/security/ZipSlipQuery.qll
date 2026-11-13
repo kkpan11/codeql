@@ -5,7 +5,6 @@ import semmle.code.java.dataflow.TaintTracking
 import semmle.code.java.security.PathSanitizer
 private import semmle.code.java.dataflow.ExternalFlow
 private import semmle.code.java.dataflow.FlowSources
-private import semmle.code.java.security.PathCreation
 private import semmle.code.java.security.Sanitizers
 
 /**
@@ -44,6 +43,8 @@ module ZipSlipConfig implements DataFlow::ConfigSig {
     node instanceof SimpleTypeSanitizer or
     node instanceof PathInjectionSanitizer
   }
+
+  predicate observeDiffInformedIncrementalMode() { any() }
 }
 
 /** Tracks flow from archive entries to file creation. */
@@ -51,6 +52,11 @@ module ZipSlipFlow = TaintTracking::Global<ZipSlipConfig>;
 
 /**
  * A sink that represents a file creation, such as a file write, copy or move operation.
+ *
+ * This deliberately selects only the `path-injection` sink kind and excludes
+ * `path-injection[read]`: Zip Slip is an archive-extraction vulnerability, so
+ * read-only path sinks (for example `ClassLoader.getResource`,
+ * `FileInputStream`, and `FileReader`) are outside the threat model.
  */
 private class FileCreationSink extends DataFlow::Node {
   FileCreationSink() { sinkNode(this, "path-injection") }

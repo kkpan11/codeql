@@ -38,6 +38,7 @@ private import ExprNodes
  * constant value in some cases.
  */
 private module Propagation {
+  overlay[local]
   ExprCfgNode getSource(VariableReadAccessCfgNode read) {
     exists(Ssa::WriteDefinition def |
       def.assigns(result) and
@@ -94,7 +95,7 @@ private module Propagation {
     or
     isIntExpr(e.(ConstantReadAccess).getValue(), i)
     or
-    forex(ExprCfgNode n | n = e.getAControlFlowNode() | isInt(n, i))
+    isInt(e.getControlFlowNode(), i)
   }
 
   predicate isFloat(ExprCfgNode e, float f) {
@@ -152,7 +153,7 @@ private module Propagation {
     or
     isFloatExpr(e.(ConstantReadAccess).getValue(), f)
     or
-    forex(ExprCfgNode n | n = e.getAControlFlowNode() | isFloat(n, f))
+    isFloat(e.getControlFlowNode(), f)
   }
 
   predicate isRational(ExprCfgNode e, int numerator, int denominator) {
@@ -174,7 +175,7 @@ private module Propagation {
     or
     isRationalExpr(e.(ConstantReadAccess).getValue(), numerator, denominator)
     or
-    forex(ExprCfgNode n | n = e.getAControlFlowNode() | isRational(n, numerator, denominator))
+    isRational(e.getControlFlowNode(), numerator, denominator)
   }
 
   predicate isComplex(ExprCfgNode e, float real, float imaginary) {
@@ -196,9 +197,10 @@ private module Propagation {
     or
     isComplexExpr(e.(ConstantReadAccess).getValue(), real, imaginary)
     or
-    forex(ExprCfgNode n | n = e.getAControlFlowNode() | isComplex(n, real, imaginary))
+    isComplex(e.getControlFlowNode(), real, imaginary)
   }
 
+  overlay[local]
   private class StringlikeLiteralWithInterpolationCfgNode extends StringlikeLiteralCfgNode {
     StringlikeLiteralWithInterpolationCfgNode() {
       this.getAComponent() =
@@ -208,6 +210,7 @@ private module Propagation {
         )
     }
 
+    overlay[global]
     pragma[nomagic]
     private string getComponentValue(int i) {
       this.getComponent(i) =
@@ -219,17 +222,20 @@ private module Propagation {
     }
 
     language[monotonicAggregates]
+    overlay[global]
     private string getValue() {
       result =
         strictconcat(int i | exists(this.getComponent(i)) | this.getComponentValue(i) order by i)
     }
 
+    overlay[global]
     pragma[nomagic]
     string getSymbolValue() {
       result = this.getValue() and
       this.getExpr() instanceof SymbolLiteral
     }
 
+    overlay[global]
     pragma[nomagic]
     string getStringValue() {
       result = this.getValue() and
@@ -237,6 +243,7 @@ private module Propagation {
       not this.getExpr() instanceof RegExpLiteral
     }
 
+    overlay[global]
     pragma[nomagic]
     string getRegExpValue(string flags) {
       result = this.getValue() and
@@ -302,7 +309,7 @@ private module Propagation {
     or
     isStringExpr(e.(ConstantReadAccess).getValue(), s)
     or
-    forex(ExprCfgNode n | n = e.getAControlFlowNode() | isString(n, s))
+    isString(e.getControlFlowNode(), s)
   }
 
   predicate isSymbol(ExprCfgNode e, string s) {
@@ -327,7 +334,7 @@ private module Propagation {
     or
     isSymbolExpr(e.(ConstantReadAccess).getValue(), s)
     or
-    forex(ExprCfgNode n | n = e.getAControlFlowNode() | isSymbol(n, s))
+    isSymbol(e.getControlFlowNode(), s)
   }
 
   predicate isRegExp(ExprCfgNode e, string s, string flags) {
@@ -352,7 +359,7 @@ private module Propagation {
     or
     isRegExpExpr(e.(ConstantReadAccess).getValue(), s, flags)
     or
-    forex(ExprCfgNode n | n = e.getAControlFlowNode() | isRegExp(n, s, flags))
+    isRegExp(e.getControlFlowNode(), s, flags)
   }
 
   predicate isBoolean(ExprCfgNode e, boolean b) {
@@ -374,7 +381,7 @@ private module Propagation {
     or
     isBooleanExpr(e.(ConstantReadAccess).getValue(), b)
     or
-    forex(ExprCfgNode n | n = e.getAControlFlowNode() | isBoolean(n, b))
+    isBoolean(e.getControlFlowNode(), b)
   }
 
   predicate isNil(ExprCfgNode e) {
@@ -396,7 +403,7 @@ private module Propagation {
     or
     isNilExpr(e.(ConstantReadAccess).getValue())
     or
-    forex(ExprCfgNode n | n = e.getAControlFlowNode() | isNil(n))
+    isNil(e.getControlFlowNode())
   }
 }
 
@@ -559,13 +566,14 @@ private predicate isArrayExpr(Expr e, ArrayLiteralCfgNode arr) {
   // control flow paths.
   // Note(hmac): I don't think this is necessary, as `getSource` will not return
   // results if the source is a phi node.
-  forex(ExprCfgNode n | n = e.getAControlFlowNode() | isArrayConstant(n, arr))
+  isArrayConstant(e.getControlFlowNode(), arr)
   or
   // if `e` is an array, then `e.freeze` is also an array
   e.(MethodCall).getMethodName() = "freeze" and
   isArrayExpr(e.(MethodCall).getReceiver(), arr)
 }
 
+overlay[local]
 private class TokenConstantAccess extends ConstantAccess, TTokenConstantAccess {
   private Ruby::Constant g;
 
@@ -577,6 +585,7 @@ private class TokenConstantAccess extends ConstantAccess, TTokenConstantAccess {
 /**
  * A constant access that has a scope resolution qualifier.
  */
+overlay[local]
 class ScopeResolutionConstantAccess extends ConstantAccess, TScopeResolutionConstantAccess {
   private Ruby::ScopeResolution g;
   private Ruby::Constant constant;
@@ -595,6 +604,7 @@ class ScopeResolutionConstantAccess extends ConstantAccess, TScopeResolutionCons
   final override predicate hasGlobalScope() { not exists(g.getScope()) }
 }
 
+overlay[local]
 private class ConstantReadAccessSynth extends ConstantAccess, TConstantReadAccessSynth {
   private string value;
 
@@ -609,6 +619,7 @@ private class ConstantReadAccessSynth extends ConstantAccess, TConstantReadAcces
   final override predicate hasGlobalScope() { value.matches("::%") }
 }
 
+overlay[local]
 private class ConstantWriteAccessSynth extends ConstantAccess, TConstantWriteAccessSynth {
   private string value;
 

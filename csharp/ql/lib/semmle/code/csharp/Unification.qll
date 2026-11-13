@@ -348,6 +348,7 @@ module Gvn {
    *
    * `subsumes` indicates whether `arg1` in fact subsumes `arg2`.
    */
+  pragma[no_dynamic_join_order]
   pragma[nomagic]
   private predicate unifiableTypeArguments(
     CompoundTypeKind k, GvnTypeArgument arg1, GvnTypeArgument arg2, int i, boolean subsumes
@@ -522,16 +523,21 @@ module Gvn {
 
 /** Provides definitions related to type unification. */
 module Unification {
-  /** A type parameter that is compatible with any type. */
+  /** A type parameter that is compatible with any type except `ref struct`. */
   class UnconstrainedTypeParameter extends TypeParameter {
-    UnconstrainedTypeParameter() { not exists(getATypeConstraint(this)) }
+    UnconstrainedTypeParameter() {
+      not exists(getATypeConstraint(this)) and not exists(getANegativeTypeConstraint(this))
+    }
   }
 
   /** A type parameter that is constrained. */
   class ConstrainedTypeParameter extends TypeParameter {
     int constraintCount;
 
-    ConstrainedTypeParameter() { constraintCount = strictcount(getATypeConstraint(this)) }
+    ConstrainedTypeParameter() {
+      constraintCount = count(getATypeConstraint(this)) + count(getANegativeTypeConstraint(this)) and
+      constraintCount > 0
+    }
 
     /**
      * Holds if this type parameter is unifiable with type `t`.
@@ -559,7 +565,7 @@ module Unification {
     bindingset[this]
     pragma[inline_late]
     override predicate unifiable(Type t) {
-      exists(TTypeParameterConstraint ttc | ttc = getATypeConstraint(this) |
+      forall(TTypeParameterConstraint ttc | ttc = getATypeConstraint(this) |
         ttc = TRefTypeConstraint() and
         t.isRefType()
         or
@@ -567,13 +573,14 @@ module Unification {
         t.isValueType()
         or
         typeConstraintUnifiable(ttc, t)
-      )
+      ) and
+      (t.isRefLikeType() implies getANegativeTypeConstraint(this) = TAllowRefTypeConstraint())
     }
 
     bindingset[this]
     pragma[inline_late]
     override predicate subsumes(Type t) {
-      exists(TTypeParameterConstraint ttc | ttc = getATypeConstraint(this) |
+      forall(TTypeParameterConstraint ttc | ttc = getATypeConstraint(this) |
         ttc = TRefTypeConstraint() and
         t.isRefType()
         or
@@ -581,7 +588,8 @@ module Unification {
         t.isValueType()
         or
         typeConstraintSubsumes(ttc, t)
-      )
+      ) and
+      (t.isRefLikeType() implies getANegativeTypeConstraint(this) = TAllowRefTypeConstraint())
     }
   }
 
@@ -603,7 +611,8 @@ module Unification {
         t.isValueType()
         or
         typeConstraintUnifiable(ttc, t)
-      )
+      ) and
+      (t.isRefLikeType() implies getANegativeTypeConstraint(this) = TAllowRefTypeConstraint())
     }
 
     bindingset[this]
@@ -617,7 +626,8 @@ module Unification {
         t.isValueType()
         or
         typeConstraintSubsumes(ttc, t)
-      )
+      ) and
+      (t.isRefLikeType() implies getANegativeTypeConstraint(this) = TAllowRefTypeConstraint())
     }
   }
 
@@ -631,6 +641,9 @@ module Unification {
         t = any(TypeParameterConstraints tpc).getATypeConstraint() and
         not t instanceof TypeParameter
       }
+
+    cached
+    newtype TTypeParameterNegativeConstraint = TAllowRefTypeConstraint()
 
     cached
     TTypeParameterConstraint getATypeConstraint(TypeParameter tp) {
@@ -647,6 +660,14 @@ module Unification {
         result = TTypeConstraint(tpc.getATypeConstraint())
         or
         result = getATypeConstraint(tpc.getATypeConstraint())
+      )
+    }
+
+    cached
+    TTypeParameterNegativeConstraint getANegativeTypeConstraint(TypeParameter tp) {
+      exists(TypeParameterConstraints tpc | tpc = tp.getConstraints() |
+        tpc.hasAllowRefLikeTypeConstraint() and
+        result = TAllowRefTypeConstraint()
       )
     }
 

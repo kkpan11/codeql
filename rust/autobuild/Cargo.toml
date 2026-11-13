@@ -1,0 +1,10 @@
+[package]
+name = "codeql-autobuilder-rust"
+version = "0.1.0"
+edition = "2024"
+
+[lints]
+workspace = true
+
+[dependencies]
+codeql-extractor = { path = "../../shared/tree-sitter-extractor" }

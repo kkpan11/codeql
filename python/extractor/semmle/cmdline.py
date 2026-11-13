@@ -1,4 +1,4 @@
-from optparse import OptionParser, OptionGroup, HelpFormatter
+from optparse import Option, OptionParser, OptionGroup, HelpFormatter
 import shlex
 import sys
 import os
@@ -8,9 +8,21 @@ from semmle import logging
 from semmle.util import VERSION
 
 
+DEFAULT_AUTOBUILDER_FLAGS = {"R", "c", "v", "verbosity", "z"}
+
+
+class RecordingOption(Option):
+    def process(self, opt, value, values, parser):
+        flag = (self._short_opts or self._long_opts)[0].lstrip("-")
+        if flag not in DEFAULT_AUTOBUILDER_FLAGS:
+            parser.extractor_flags.add(flag)
+        return Option.process(self, opt, value, values, parser)
+
+
 def make_parser():
     '''Parse command_line, returning options, arguments'''
-    parser = OptionParser(add_help_option=False, version='%s' % VERSION)
+    parser = OptionParser(option_class=RecordingOption, add_help_option=False, version='%s' % VERSION)
+    parser.extractor_flags = set()
 
     import_options = OptionGroup(parser, "Import following options",
         description="Note that -a -n -g and -t are included for backwards compatibility. They are ignored")
@@ -102,8 +114,10 @@ def make_parser():
     config_options.add_option("--colorize", dest="colorize", default=False, action="store_true",
                       help = """Colorize the logging output.""")
 
-    config_options.add_option("--dont-extract-stdlib", dest="extract_stdlib", default=True, action="store_false",
-        help="Do not extract the standard library.")
+    config_options.add_option("--dont-extract-stdlib", dest="extract_stdlib", action="store_false",
+        help="This flag is deprecated; not extracting the standard library is now the default.")
+    config_options.add_option("--extract-stdlib", dest="extract_stdlib", default=False, action="store_true",
+        help="Extract the standard library.")
 
     parser.add_option_group(config_options)
 
@@ -170,6 +184,7 @@ def parse(command_line):
                     setattr(options, attr, dval)
         args.extend(extra_args)
     del options.file
+    options.extractor_flags = sorted(parser.extractor_flags)
     if options.help:
         if options.verbose:
             for opt in parser._get_all_options():
@@ -226,8 +241,18 @@ def parse(command_line):
 
     if 'CODEQL_EXTRACTOR_PYTHON_DONT_EXTRACT_STDLIB' in os.environ:
         options.extract_stdlib = False
+        print ("WARNING: CODEQL_EXTRACTOR_PYTHON_DONT_EXTRACT_STDLIB is deprecated; the default is now to not extract the standard library.")
+
+    if 'CODEQL_EXTRACTOR_PYTHON_EXTRACT_STDLIB' in os.environ:
+        options.extract_stdlib = True
 
     options.prune = True
+
+    if options.extract_stdlib:
+        print ("WARNING: The analysis will extract the standard library. This behavior is deprecated and will be removed in a future release. We expect it to be gone in CLI version 2.20.0.")
+    else:
+        print ("INFO: The Python extractor has recently stopped extracting the standard library by default. If you encounter problems, please let us know by submitting an issue to https://github.com/github/codeql. It is possible to re-enable extraction of the standard library by setting the environment variable CODEQL_EXTRACTOR_PYTHON_EXTRACT_STDLIB.")
+
     return options, args
 
 def split_and_flatten(options_list, div):

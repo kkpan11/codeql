@@ -7,12 +7,12 @@ void startServer(int heapSize);
 typedef unsigned long size_t;
 size_t strlen(const char *s);
 
-int main(int argc, char** argv) {
+int main1(int argc, char** argv) {
   int maxConnections = atoi(argv[1]);
 
   // BAD: arithmetic on a user input without any validation
-  startServer(maxConnections * 1000);
-  
+  startServer(maxConnections * 1000); // $ Alert[cpp/integer-overflow-tainted] Alert[cpp/tainted-arithmetic]
+
   // GOOD: check the user input first
   int maxConnections2 = atoi(argv[1]);
   if (maxConnections2 < 100) {
@@ -41,7 +41,7 @@ int main(int argc, char** argv) {
     len2 = atoi(argv[1]);
     while (len2)
     {
-      len2--; // BAD: can underflow, if len2 is initially negative.
+      len2--; // $ Alert[cpp/integer-overflow-tainted] Alert[cpp/tainted-arithmetic] // BAD: can underflow, if len2 is initially negative.
     }
   }
 
@@ -51,7 +51,7 @@ int main(int argc, char** argv) {
     len3 = atoi(argv[1]);
     while (len3 != 0)
     {
-      len3--; // BAD: can underflow, if len3 is initially negative.
+      len3--; // $ Alert[cpp/integer-overflow-tainted] Alert[cpp/tainted-arithmetic] // BAD: can underflow, if len3 is initially negative.
     }
   }
 

@@ -1,3 +1,7 @@
+/** Provides predicates for working with strings. */
+overlay[local?]
+module;
+
 private import Numbers
 
 /**

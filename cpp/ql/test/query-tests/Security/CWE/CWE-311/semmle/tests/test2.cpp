@@ -40,38 +40,38 @@ int getPasswordMaxChars();
 
 void tests(FILE *log, myStruct &s)
 {
-	fprintf(log, "password = %s\n", s.password); // BAD
-	fprintf(log, "thepasswd = %s\n", s.thepasswd); // BAD
-	fprintf(log, "accountkey = %s\n", s.accountkey); // BAD
+	fprintf(log, "password = %s\n", s.password); // $ Alert[cpp/cleartext-storage-file] // BAD
+	fprintf(log, "thepasswd = %s\n", s.thepasswd); // $ Alert[cpp/cleartext-storage-file] // BAD
+	fprintf(log, "accountkey = %s\n", s.accountkey); // $ Alert[cpp/cleartext-storage-file] // BAD
 	fprintf(log, "password_hash = %s\n", s.password_hash); // GOOD
 	fprintf(log, "encrypted_passwd = %s\n", s.encrypted_passwd); // GOOD
 	fprintf(log, "password_file = %s\n", s.password_file); // GOOD
 	fprintf(log, "password_path = %s\n", s.password_path); // GOOD
-	fprintf(log, "passwd_config = %s\n", s.passwd_config); // DUBIOUS [REPORTED]
+	fprintf(log, "passwd_config = %s\n", s.passwd_config); // $ Alert[cpp/cleartext-storage-file] // DUBIOUS [REPORTED]
 	fprintf(log, "num_passwords = %i\n", s.num_passwords); // GOOD
 	fprintf(log, "password_tries = %i\n", *(s.password_tries)); // GOOD
 	fprintf(log, "have_passwd = %i\n", s.have_passwd); // GOOD
-	fprintf(log, "widepassword = %ls\n", s.widepassword); // BAD
-	fprintf(log, "widepassword = %S\n", s.widepassword); // BAD
+	fprintf(log, "widepassword = %ls\n", s.widepassword); // $ Alert[cpp/cleartext-storage-file] // BAD
+	fprintf(log, "widepassword = %S\n", s.widepassword); // $ Alert[cpp/cleartext-storage-file] // BAD
 
-	fprintf(log, "getPassword() = %s\n", getPassword()); // BAD
+	fprintf(log, "getPassword() = %s\n", getPassword()); // $ Alert[cpp/cleartext-storage-file] // BAD
 	fprintf(log, "getPasswordHash() = %s\n", getPasswordHash()); // GOOD
 	fprintf(log, "getPasswordMaxChars() = %i\n", getPasswordMaxChars()); // GOOD
 
 	{
-		char *cpy1 = s.password;
+		char *cpy1 = s.password; // $ Source[cpp/cleartext-storage-file]
 		char *cpy2 = crypt(s.password);
 
-		fprintf(log, "cpy1 = %s\n", cpy1); // BAD
+		fprintf(log, "cpy1 = %s\n", cpy1); // $ Alert[cpp/cleartext-storage-file] // BAD
 		fprintf(log, "cpy2 = %s\n", cpy2); // GOOD
 	}
 
 	{
 		char buf[1024];
 
-		strcpy(buf, s.password);
-		fprintf(log, "buf = %s\n", buf); // BAD
-		
+		strcpy(buf, s.password); // $ Source[cpp/cleartext-storage-file]
+		fprintf(log, "buf = %s\n", buf); // $ Alert[cpp/cleartext-storage-file] // BAD
+
 		strcpy(buf, s.password_hash);
 		fprintf(log, "buf = %s\n", buf); // GOOD
 	}
@@ -95,8 +95,8 @@ void tests(FILE *log, myStruct &s)
 	{
 		char buffer[1024];
 
-		snprintf(buffer, 1024, "password = %s", s.password);
-		fprintf(log, "log: %s", buffer); // BAD
+		snprintf(buffer, 1024, "password = %s", s.password); // $ Source[cpp/cleartext-storage-file]
+		fprintf(log, "log: %s", buffer); // $ Alert[cpp/cleartext-storage-file] // BAD
 	}
 }
 
@@ -107,6 +107,69 @@ void test_gets()
 	{
 		char password[1024];
 
-		gets(password); // BAD
+		gets(password); // $ Alert[cpp/cleartext-storage-buffer] // BAD
 	}
+}
+
+namespace std
+{
+	template<class CharT> struct char_traits;
+	template<class T> class allocator;
+
+	template<class CharT, class Traits = char_traits<CharT>>
+	class basic_string_view
+	{
+	public:
+		const CharT* data() const;
+	};
+
+	template<class CharT, class Traits = char_traits<CharT>, class Allocator = allocator<CharT>>
+	class basic_string
+	{
+	public:
+		const CharT* data() const;
+		size_t size() const;
+		basic_string();
+		basic_string& operator+=(CharT);
+		const CharT* c_str() const;
+		const CharT* begin() const;
+		const CharT* end() const;
+
+		operator basic_string_view<CharT, Traits>() const;
+	};
+
+	using string = basic_string<char>;
+	using string_view = basic_string_view<char>;
+}
+
+struct StringCredentials
+{
+	std::string password;
+	std::string username;
+};
+
+void test_source_glvalue(FILE* log, const StringCredentials& credentials)
+{
+	const char* pw = credentials.password.c_str(); // $ Source[cpp/cleartext-storage-file]
+	fprintf(log, "%s", pw); // $ Alert[cpp/cleartext-storage-file]
+}
+
+std::string copy_characters(std::string s)
+{
+	std::string result;
+	for (char ch : s)
+		result += ch;
+	return result;
+}
+
+void test_character_iteration(FILE* log, const StringCredentials& credentials)
+{
+	std::string by_value = copy_characters(credentials.password); // $ Source[cpp/cleartext-storage-file]
+	fprintf(log, "%s", by_value.c_str()); // $ Alert[cpp/cleartext-storage-file]
+}
+
+void test_reference(FILE* log, std::string s) {
+	const std::string& password = s;
+	const std::string& copy = password; // $ Source[cpp/cleartext-storage-file]
+	fprintf(log, "%s", copy.c_str()); // $ Alert[cpp/cleartext-storage-file]
 }

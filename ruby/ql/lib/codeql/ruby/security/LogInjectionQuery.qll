@@ -26,20 +26,6 @@ abstract class Sink extends DataFlow::Node { }
 abstract class Sanitizer extends DataFlow::Node { }
 
 /**
- * A taint-tracking configuration for untrusted user input used in log entries.
- * DEPRECATED: Use `LogInjectionFlow`
- */
-deprecated class LogInjectionConfiguration extends TaintTracking::Configuration {
-  LogInjectionConfiguration() { this = "LogInjection" }
-
-  override predicate isSource(DataFlow::Node source) { source instanceof Source }
-
-  override predicate isSink(DataFlow::Node sink) { sink instanceof Sink }
-
-  override predicate isSanitizer(DataFlow::Node node) { node instanceof Sanitizer }
-}
-
-/**
  * A source of remote user controlled input.
  */
 class RemoteSource extends Source instanceof RemoteFlowSource { }
@@ -52,7 +38,7 @@ class LoggingSink extends Sink {
 }
 
 private class ExternalLogInjectionSink extends Sink {
-  ExternalLogInjectionSink() { this = ModelOutput::getASinkNode("log-injection").asSink() }
+  ExternalLogInjectionSink() { ModelOutput::sinkNode(this, "log-injection") }
 }
 
 /**
@@ -81,12 +67,18 @@ class HtmlEscapingAsSanitizer extends Sanitizer {
   HtmlEscapingAsSanitizer() { this = any(HtmlEscaping esc).getOutput() }
 }
 
+private class ExternalLogInjectionSanitizer extends Sanitizer {
+  ExternalLogInjectionSanitizer() { ModelOutput::barrierNode(this, "log-injection") }
+}
+
 private module LogInjectionConfig implements DataFlow::ConfigSig {
   predicate isSource(DataFlow::Node source) { source instanceof Source }
 
   predicate isSink(DataFlow::Node sink) { sink instanceof Sink }
 
   predicate isBarrier(DataFlow::Node node) { node instanceof Sanitizer }
+
+  predicate observeDiffInformedIncrementalMode() { any() }
 }
 
 /**

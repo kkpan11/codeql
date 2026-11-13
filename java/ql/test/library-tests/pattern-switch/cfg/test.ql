@@ -1,5 +1,6 @@
 import java
+import utils.test.AstCfg
 
 from ControlFlowNode cn
-where cn.getFile().getBaseName() = ["Test.java", "Exhaustive.java"]
-select cn, cn.getASuccessor()
+where cn.getLocation().getFile().getBaseName() = ["Test.java", "Exhaustive.java"]
+select cn, getAnAstSuccessor(cn)

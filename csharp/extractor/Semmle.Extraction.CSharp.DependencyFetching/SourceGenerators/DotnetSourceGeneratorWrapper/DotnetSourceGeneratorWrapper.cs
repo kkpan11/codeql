@@ -33,16 +33,18 @@ namespace Semmle.Extraction.CSharp.DependencyFetching
 
         protected abstract void GenerateAnalyzerConfig(IEnumerable<string> additionalFiles, string csprojFile, string analyzerConfigPath);
 
-        public IEnumerable<string> RunSourceGenerator(IEnumerable<string> additionalFiles, string csprojFile, IEnumerable<string> references, string targetDir)
+        public IEnumerable<string> RunSourceGenerator(IEnumerable<string> additionalFiles, string csprojFile, IEnumerable<string> references, string targetDir, string sourceDir)
         {
             try
             {
-                var name = Guid.NewGuid().ToString("N").ToUpper();
+                var relativePathToCsProj = Path.GetRelativePath(sourceDir, csprojFile)
+                    .Replace('\\', '/'); // Ensure we're generating the same hash regardless of the OS
+                var name = FileUtils.ComputeHash($"{relativePathToCsProj}\n{this.GetType().Name}");
                 using var tempDir = new TemporaryDirectory(Path.Join(FileUtils.GetTemporaryWorkingDirectory(out _), "source-generator"), "source generator temporary", logger);
-                var analyzerConfigPath = Path.Combine(tempDir.DirInfo.FullName, $"{name}.txt");
-                var dllPath = Path.Combine(tempDir.DirInfo.FullName, $"{name}.dll");
-                var cscArgsPath = Path.Combine(tempDir.DirInfo.FullName, $"{name}.rsp");
-                var outputFolder = Path.Combine(targetDir, name);
+                var analyzerConfigPath = Path.Join(tempDir.DirInfo.FullName, $"{name}.txt");
+                var dllPath = Path.Join(tempDir.DirInfo.FullName, $"{name}.dll");
+                var cscArgsPath = Path.Join(tempDir.DirInfo.FullName, $"{name}.rsp");
+                var outputFolder = Path.Join(targetDir, name);
                 Directory.CreateDirectory(outputFolder);
                 logger.LogInfo("Producing analyzer config content.");
                 GenerateAnalyzerConfig(additionalFiles, csprojFile, analyzerConfigPath);
@@ -77,7 +79,7 @@ namespace Semmle.Extraction.CSharp.DependencyFetching
                     sw.Write(argsString);
                 }
 
-                dotnet.Exec($"\"{cscPath}\" /noconfig @\"{cscArgsPath}\"");
+                dotnet.Exec([cscPath, "/noconfig", $"@{cscArgsPath}"]);
 
                 var files = Directory.GetFiles(outputFolder, "*.*", new EnumerationOptions { RecurseSubdirectories = true });
 

@@ -303,7 +303,7 @@ y = foo()
 
 # Returning tuples with different sizes
 
-def returning_different_tuple_sizes(x):
+def returning_different_tuple_sizes(x): # $ Alert[py/mixed-tuple-returns]
     if x:
         return 1,2
     else:
@@ -321,13 +321,35 @@ def function_returning_2_tuple():
 def function_returning_3_tuple():
     return 1,2,3
 
-def indirectly_returning_different_tuple_sizes(x):
+def indirectly_returning_different_tuple_sizes(x): # OK, since we only look at local tuple returns
     if x:
         return function_returning_2_tuple()
     else:
         return function_returning_3_tuple()
-    
+
 
 def mismatched_multi_assign(x):
     a,b = returning_different_tuple_sizes(x)
     return a,b
+
+
+def ok_match(x):  # FP
+    match x:
+        case True | 'true':
+            return 0
+        case _:
+            raise ValueError(x)
+
+
+def ok_match2(x):  # FP
+    match x:
+        case None:
+            return 0
+        case _:
+            return 1
+
+def ok_tuple_returns_captured_in_type(x: bool) -> tuple[int, ...]: # OK because there is a type annotation present
+    if x:
+        return 1, 2
+    else:
+        return 1, 2, 3

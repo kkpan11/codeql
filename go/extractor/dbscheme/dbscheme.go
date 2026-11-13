@@ -277,6 +277,11 @@ func FloatColumn(columnName string) Column {
 	return Column{columnName, FLOAT, false, true}
 }
 
+// BooleanColumn constructs a column with name `columnName` holding boolean values
+func BooleanColumn(columnName string) Column {
+	return Column{columnName, BOOLEAN, false, true}
+}
+
 // A Table represents a database table
 type Table struct {
 	name    string
@@ -410,17 +415,19 @@ func AddDefaultSnippet(snippet string) bool {
 
 // PrintDbScheme prints the schema of this database to the writer `w`
 func PrintDbScheme(w io.Writer) {
-	fmt.Fprintf(w, "/** Auto-generated dbscheme; do not edit. */\n\n")
+	var b strings.Builder
+	fmt.Fprintf(&b, "/** Auto-generated dbscheme; do not edit. Run `make gen` in directory `go/` to regenerate. */\n\n")
 	for _, snippet := range defaultSnippets {
-		fmt.Fprintf(w, "%s\n", snippet)
+		fmt.Fprintf(&b, "%s\n", snippet)
 	}
 	for _, table := range tables {
-		fmt.Fprintf(w, "%s\n\n", table.String())
+		fmt.Fprintf(&b, "%s\n\n", table.String())
 	}
 	for _, tp := range types {
 		def := tp.def()
 		if def != "" {
-			fmt.Fprintf(w, "%s\n\n", def)
+			fmt.Fprintf(&b, "%s\n\n", def)
 		}
 	}
+	fmt.Fprintln(w, strings.TrimRight(b.String(), "\n"))
 }

@@ -1,4 +1,8 @@
-/** Contains predicates concerning when and where files are opened and closed. */
+/**
+ * DEPRECATED: Use FileNotAlwaysClosedQuery instead.
+ * Contains predicates concerning when and where files are opened and closed.
+ */
+deprecated module;
 
 import python
 import semmle.python.pointsto.Filters
@@ -134,12 +138,12 @@ predicate function_opens_file(FunctionValue f) {
   f = Value::named("open")
   or
   exists(EssaVariable v, Return ret | ret.getScope() = f.getScope() |
-    ret.getValue().getAFlowNode() = v.getAUse() and
+    v.getNode() = ret.getValue().getAUse() and
     var_is_open(v, _)
   )
   or
   exists(Return ret, FunctionValue callee | ret.getScope() = f.getScope() |
-    ret.getValue().getAFlowNode() = callee.getACall() and
+    callee.getNode() = ret.getValue().getACall() and
     function_opens_file(callee)
   )
 }

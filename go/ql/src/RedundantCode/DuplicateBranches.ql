@@ -6,7 +6,8 @@
  * @problem.severity warning
  * @precision very-high
  * @id go/duplicate-branches
- * @tags maintainability
+ * @tags quality
+ *       reliability
  *       correctness
  *       external/cwe/cwe-561
  */
@@ -22,4 +23,4 @@ where
   thenBranch = is.getThen() and
   elseBranch = is.getElse() and
   thenBranch.hash() = elseBranch.hash()
-select is.getCond(), "The 'then' and 'else' branches of this if statement are identical."
+select is.getCondition(), "The 'then' and 'else' branches of this if statement are identical."

@@ -27,9 +27,10 @@ namespace Semmle.Extraction.CSharp.DependencyFetching
         private readonly ILogger logger;
         private readonly IDiagnosticsWriter diagnosticsWriter;
         private readonly NugetPackageRestorer nugetPackageRestorer;
+        private readonly IRegistryProxy? registryProxy;
         private readonly IDotNet dotnet;
         private readonly FileContent fileContent;
-        private readonly FileProvider fileProvider;
+        private readonly IFileProvider fileProvider;
 
         // Only used as a set, but ConcurrentDictionary is the only concurrent set in .NET.
         private readonly IDictionary<string, bool> usedReferences = new ConcurrentDictionary<string, bool>();
@@ -40,7 +41,6 @@ namespace Semmle.Extraction.CSharp.DependencyFetching
         private int conflictedReferences = 0;
         private readonly DirectoryInfo sourceDir;
         private string? dotnetPath;
-
         private readonly TemporaryDirectory tempWorkingDirectory;
         private readonly bool cleanupTempWorkingDirectory;
 
@@ -75,7 +75,7 @@ namespace Semmle.Extraction.CSharp.DependencyFetching
                 }
             }
 
-            this.diagnosticsWriter = new DiagnosticsStream(Path.Combine(
+            this.diagnosticsWriter = new DiagnosticsStream(Path.Join(
                 diagDirEnv ?? "",
                 $"dependency-manager-{DateTime.UtcNow:yyyyMMddHHmm}-{Environment.ProcessId}.jsonc"));
             this.sourceDir = new DirectoryInfo(srcDir);
@@ -106,9 +106,11 @@ namespace Semmle.Extraction.CSharp.DependencyFetching
                 return BuildScript.Success;
             }).Run(SystemBuildActions.Instance, startCallback, exitCallback);
 
+            registryProxy = RegistryProxy.Make(logger, diagnosticsWriter, tempWorkingDirectory);
+
             try
             {
-                this.dotnet = DotNet.Make(logger, dotnetPath, tempWorkingDirectory);
+                this.dotnet = DotNet.Make(logger, dotnetPath, tempWorkingDirectory, registryProxy);
                 runtimeLazy = new Lazy<Runtime>(() => new Runtime(dotnet));
             }
             catch
@@ -117,7 +119,7 @@ namespace Semmle.Extraction.CSharp.DependencyFetching
                 throw;
             }
 
-            nugetPackageRestorer = new NugetPackageRestorer(fileProvider, fileContent, dotnet, diagnosticsWriter, logger, this);
+            nugetPackageRestorer = new NugetPackageRestorer(fileProvider, fileContent, dotnet, registryProxy, diagnosticsWriter, logger, this);
 
             var dllLocations = fileProvider.Dlls.Select(x => new AssemblyLookupLocation(x)).ToHashSet();
             dllLocations.UnionWith(nugetPackageRestorer.Restore());
@@ -281,7 +283,7 @@ namespace Semmle.Extraction.CSharp.DependencyFetching
             {
                 foreach (var fp in frameworkPaths)
                 {
-                    dotnetFrameworkVersionVariantCount += NugetPackageRestorer.GetOrderedPackageVersionSubDirectories(fp.Path!).Length;
+                    dotnetFrameworkVersionVariantCount += nugetPackageRestorer.GetOrderedPackageVersionSubDirectories(fp.Path!).Length;
                 }
 
                 var folder = nugetPackageRestorer.GetNewestNugetPackageVersionFolder(frameworkPath.Path, ".NET Framework");
@@ -293,7 +295,7 @@ namespace Semmle.Extraction.CSharp.DependencyFetching
 
             string? runtimeLocation = null;
 
-            if (fileContent.IsNewProjectStructureUsed)
+            if (fileContent.IsSdkProjectStructureUsed)
             {
                 runtimeLocation = Runtime.NetCoreRuntime;
             }
@@ -310,7 +312,7 @@ namespace Semmle.Extraction.CSharp.DependencyFetching
 
             if (runtimeLocation is null)
             {
-                runtimeLocation ??= Runtime.ExecutingRuntime;
+                runtimeLocation = Runtime.ExecutingRuntime;
                 dllLocations.Add(new AssemblyLookupLocation(runtimeLocation, name => !name.StartsWith("Semmle.")));
             }
             else
@@ -325,7 +327,7 @@ namespace Semmle.Extraction.CSharp.DependencyFetching
         private void RemoveNugetPackageReference(string packagePrefix, ISet<AssemblyLookupLocation> dllLocations)
         {
             var packageFolder = nugetPackageRestorer.PackageDirectory.DirInfo.FullName.ToLowerInvariant();
-            var packagePathPrefix = Path.Combine(packageFolder, packagePrefix.ToLowerInvariant());
+            var packagePathPrefix = Path.Join(packageFolder, packagePrefix.ToLowerInvariant());
             var toRemove = dllLocations.Where(s => s.Path.StartsWith(packagePathPrefix, StringComparison.InvariantCultureIgnoreCase));
             foreach (var path in toRemove)
             {
@@ -542,6 +544,7 @@ namespace Semmle.Extraction.CSharp.DependencyFetching
         public void Dispose()
         {
             nugetPackageRestorer?.Dispose();
+            registryProxy?.Dispose();
             if (cleanupTempWorkingDirectory)
             {
                 tempWorkingDirectory?.Dispose();

@@ -1,6 +1,8 @@
 /**
  * Provides classes for working with code comments.
  */
+overlay[local]
+module;
 
 import go
 
@@ -188,6 +190,18 @@ private Comment getInitialComment(File f, int i) {
     )
 }
 
+bindingset[comment]
+pragma[inline_late]
+private predicate hasBuildConstraintText(Comment comment) {
+  comment.getText().regexpMatch("\\s*(\\+|go:)build.*")
+}
+
+pragma[noinline]
+private predicate isInitialBuildConstraintComment(Comment comment) {
+  isInitialComment(comment, _, _, _) and
+  hasBuildConstraintText(comment)
+}
+
 /**
  * A build constraint comment of the form `// +build ...` or `//go:build ...`.
  *
@@ -209,7 +223,7 @@ class BuildConstraintComment extends LineComment {
       not getInitialComment(f, [0 .. i - 1]) instanceof BlockComment
     ) and
     // comment text starts with `+build` or `go:build`
-    this.getText().regexpMatch("\\s*(\\+|go:)build.*")
+    isInitialBuildConstraintComment(this)
   }
 
   override string getAPrimaryQlClass() { result = "BuildConstraintComment" }

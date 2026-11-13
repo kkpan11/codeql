@@ -37,14 +37,25 @@ private module PredictableSeedFlowConfig implements DataFlow::ConfigSig {
   predicate isAdditionalFlowStep(DataFlow::Node node1, DataFlow::Node node2) {
     predictableCalcStep(node1.asExpr(), node2.asExpr())
   }
+
+  predicate observeDiffInformedIncrementalMode() { any() }
+
+  Location getASelectedSinkLocation(DataFlow::Node sink) {
+    // This predicate matches `PredictableSeed.ql`, which is the only place
+    // where `PredictableSeedFlowConfig` is used.
+    exists(GetRandomData da, VarRead use |
+      result = da.getLocation() and
+      da.getQualifier() = use and
+      isSeeding(sink.asExpr(), use)
+    )
+  }
 }
 
 private module PredictableSeedFlow = DataFlow::Global<PredictableSeedFlowConfig>;
 
 private predicate predictableCalcStep(Expr e1, Expr e2) {
-  e2.(BinaryExpr).hasOperands(e1, any(PredictableSeedExpr p))
-  or
-  exists(AssignOp a | a = e2 | e1 = a.getDest() and a.getRhs() instanceof PredictableSeedExpr)
+  e2.(BinaryExpr).hasOperands(e1, any(PredictableSeedExpr p)) and
+  not e2 instanceof AssignExpr
   or
   exists(ConstructorCall cc, TypeNumber t | cc = e2 |
     cc.getArgument(0) = e1 and

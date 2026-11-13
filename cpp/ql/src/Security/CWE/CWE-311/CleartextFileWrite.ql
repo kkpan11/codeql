@@ -19,6 +19,7 @@ import semmle.code.cpp.ir.dataflow.DataFlow
 import semmle.code.cpp.valuenumbering.GlobalValueNumbering
 import semmle.code.cpp.ir.dataflow.TaintTracking
 import FromSensitiveFlow::PathGraph
+import ClearText as ClearText
 
 /**
  * A taint flow configuration for flow from a sensitive expression to a `FileWrite` sink.
@@ -28,8 +29,18 @@ module FromSensitiveConfig implements DataFlow::ConfigSig {
 
   predicate isSink(DataFlow::Node sink) { isSinkImpl(sink, _, _) }
 
-  predicate isBarrier(DataFlow::Node node) {
-    node.asExpr().getUnspecifiedType() instanceof IntegralType
+  predicate isBarrier = ClearText::isBarrier/1;
+
+  predicate observeDiffInformedIncrementalMode() { any() }
+
+  Location getASelectedSourceLocation(DataFlow::Node sourceNode) {
+    exists(SensitiveExpr source | result = [source.getLocation(), sourceNode.getLocation()] |
+      isSourceImpl(sourceNode, source)
+    )
+  }
+
+  Location getASelectedSinkLocation(DataFlow::Node sink) {
+    exists(FileWrite w | result = [w.getLocation(), sink.getLocation()] | isSinkImpl(sink, w, _))
   }
 }
 
@@ -49,7 +60,7 @@ predicate isSinkImpl(DataFlow::Node sink, FileWrite w, Expr dest) {
 
 predicate isSourceImpl(DataFlow::Node source, SensitiveExpr sensitive) {
   not isFileName(globalValueNumber(sensitive)) and // file names are not passwords
-  source.asExpr() = sensitive
+  ClearText::isSource(source, sensitive)
 }
 
 /**

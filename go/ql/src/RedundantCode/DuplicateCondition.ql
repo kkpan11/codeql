@@ -5,7 +5,8 @@
  * @kind problem
  * @problem.severity error
  * @id go/duplicate-condition
- * @tags maintainability
+ * @tags quality
+ *       reliability
  *       correctness
  *       external/cwe/cwe-561
  * @precision very-high
@@ -15,7 +16,7 @@ import go
 
 /** Gets the `i`th condition in the `if`-`else if` chain starting at `stmt`. */
 Expr getCondition(IfStmt stmt, int i) {
-  i = 0 and result = stmt.getCond()
+  i = 0 and result = stmt.getCondition()
   or
   exists(IfStmt elsif | elsif = stmt.getElse() |
     not exists(elsif.getInit()) and

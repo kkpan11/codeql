@@ -1,10 +1,16 @@
 package toolchain
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/github/codeql-go/extractor/util"
+)
 
 func TestParseGoVersion(t *testing.T) {
 	tests := map[string]string{
-		"go version go1.18.9 linux/amd64": "go1.18.9",
+		"go version go1.18.9 linux/amd64":                                                              "go1.18.9",
+		"go version go1.26.3-X:nodwarf5 linux/amd64":                                                   "go1.26.3",
+		"go version go1.26.3rc1 linux/amd64":                                                           "go1.26.3rc1",
 		"warning: GOPATH set to GOROOT (/usr/local/go) has no effect\ngo version go1.18.9 linux/amd64": "go1.18.9",
 	}
 	for input, expected := range tests {
@@ -16,7 +22,7 @@ func TestParseGoVersion(t *testing.T) {
 }
 
 func TestHasGoVersion(t *testing.T) {
-	if HasGoVersion("1.21") {
+	if HasGoVersion(util.NewSemVer("1.21")) {
 		t.Error("Expected HasGoVersion(\"1.21\") to be false, but got true")
 	}
 }

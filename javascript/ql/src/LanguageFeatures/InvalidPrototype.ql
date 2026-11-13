@@ -5,7 +5,9 @@
  * @kind problem
  * @problem.severity error
  * @id js/invalid-prototype-value
- * @tags correctness
+ * @tags quality
+ *       reliability
+ *       correctness
  *       language-features
  *       external/cwe/cwe-704
  * @precision high
@@ -19,7 +21,11 @@ private import semmle.javascript.dataflow.InferredTypes
  */
 predicate isProto(DataFlow::AnalyzedNode e) {
   // `o.__proto__ = e`, `{ __proto__: e }`, ...
-  e = any(DataFlow::PropWrite pwn | pwn.getPropertyName() = "__proto__").getRhs()
+  e =
+    any(DataFlow::PropWrite pwn |
+      pwn.getPropertyName() = "__proto__" and
+      not pwn.getWriteNode().(Property).isComputed()
+    ).getRhs()
   or
   // Object.create(e)
   e = DataFlow::globalVarRef("Object").getAMemberCall("create").getArgument(0)

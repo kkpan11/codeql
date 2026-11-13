@@ -1,5 +1,6 @@
 // CodeQL database schema for Ruby
 // Automatically generated from the tree-sitter grammar; do not edit
+// To regenerate, run 'make dbscheme' in ql/ruby/
 
 /*- Files and folders -*/
 
@@ -100,13 +101,39 @@ yaml_scalars (unique int scalar: @yaml_scalar_node ref,
               int style: int ref,
               string value: string ref);
 
+yaml_comments (unique int id: @yaml_comment,
+               string text: string ref,
+               string tostring: string ref);
+
 yaml_errors (unique int id: @yaml_error,
              string message: string ref);
 
 yaml_locations(unique int locatable: @yaml_locatable ref,
              int location: @location_default ref);
 
-@yaml_locatable = @yaml_node | @yaml_error;
+@yaml_locatable = @yaml_node | @yaml_error | @yaml_comment;
+
+/*- Database metadata -*/
+
+/**
+ * The CLI will automatically emit applicable tuples for this table,
+ * such as `databaseMetadata("isOverlay", "true")` when building an
+ * overlay database.
+ */
+databaseMetadata(
+  string metadataKey: string ref,
+  string value: string ref
+);
+
+/*- Overlay support -*/
+
+/**
+ * The CLI will automatically emit tuples for each new/modified/deleted file
+ * when building an overlay database.
+ */
+overlayChangedFiles(
+  string path: string ref
+);
 
 /*- Ruby dbscheme -*/
 @ruby_underscore_arg = @ruby_assignment | @ruby_binary | @ruby_conditional | @ruby_operator_assignment | @ruby_range | @ruby_unary | @ruby_underscore_primary
@@ -567,6 +594,13 @@ ruby_do_block_parameters(
 
 ruby_do_block_def(
   unique int id: @ruby_do_block
+);
+
+@ruby_element_reference_block_type = @ruby_block | @ruby_do_block
+
+ruby_element_reference_block(
+  unique int ruby_element_reference: @ruby_element_reference ref,
+  unique int block: @ruby_element_reference_block_type ref
 );
 
 @ruby_element_reference_child_type = @ruby_block_argument | @ruby_hash_splat_argument | @ruby_pair | @ruby_splat_argument | @ruby_token_forward_argument | @ruby_underscore_expression

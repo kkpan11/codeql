@@ -2,6 +2,8 @@
 
 import csharp
 import semmle.code.csharp.frameworks.system.Collections
+private import semmle.code.csharp.frameworks.System
+private import semmle.code.csharp.frameworks.system.collections.Generic
 
 private string modifyMethodName() {
   result =
@@ -52,20 +54,80 @@ private string genericCollectionTypeName() {
     ]
 }
 
-/** A collection type. */
-class CollectionType extends RefType {
-  CollectionType() {
-    exists(RefType base | base = this.getABaseType*() |
-      base.hasFullyQualifiedName(collectionNamespaceName(), collectionTypeName())
-      or
-      base.(ConstructedType)
-          .getUnboundGeneric()
-          .hasFullyQualifiedName(genericCollectionNamespaceName(), genericCollectionTypeName())
-    )
-    or
-    this instanceof ArrayType
+/** A collection type */
+abstract private class CollectionTypeImpl extends RefType {
+  /**
+   * Gets the element type of this collection, for example `int` in `List<int>`.
+   */
+  abstract Type getElementType();
+}
+
+private class GenericCollectionType extends CollectionTypeImpl {
+  private ConstructedType base;
+
+  GenericCollectionType() {
+    base = this.getABaseType*() and
+    base.getUnboundGeneric()
+        .hasFullyQualifiedName(genericCollectionNamespaceName(), genericCollectionTypeName())
+  }
+
+  override Type getElementType() {
+    result = base.getTypeArgument(0) and base.getNumberOfTypeArguments() = 1
   }
 }
+
+private class NonGenericCollectionType extends CollectionTypeImpl {
+  NonGenericCollectionType() {
+    exists(RefType base | base = this.getABaseType*() |
+      base.hasFullyQualifiedName(collectionNamespaceName(), collectionTypeName())
+    )
+  }
+
+  override Type getElementType() { none() }
+}
+
+private class ArrayCollectionType extends CollectionTypeImpl instanceof ArrayType {
+  override Type getElementType() { result = ArrayType.super.getElementType() }
+}
+
+final class CollectionType = CollectionTypeImpl;
+
+/**
+ * A collection type that can be used as a `params` parameter type.
+ */
+abstract private class ParamsCollectionTypeImpl extends ValueOrRefType {
+  /**
+   * Gets the element type of this collection, for example `int` in `IEnumerable<int>`.
+   */
+  abstract Type getElementType();
+}
+
+private class ParamsArrayType extends ParamsCollectionTypeImpl instanceof ArrayType {
+  override Type getElementType() { result = ArrayType.super.getElementType() }
+}
+
+private class ParamsConstructedCollectionTypes extends ParamsCollectionTypeImpl {
+  private ConstructedType base;
+
+  ParamsConstructedCollectionTypes() {
+    exists(UnboundGenericType unboundbase |
+      base = this.getABaseType*() and unboundbase = base.getUnboundGeneric()
+    |
+      unboundbase instanceof SystemCollectionsGenericIEnumerableTInterface or
+      unboundbase instanceof SystemCollectionsGenericICollectionInterface or
+      unboundbase instanceof SystemCollectionsGenericIListTInterface or
+      unboundbase instanceof SystemCollectionsGenericIReadOnlyCollectionTInterface or
+      unboundbase instanceof SystemCollectionsGenericIReadOnlyListTInterface or
+      unboundbase instanceof SystemSpanStruct or
+      unboundbase instanceof SystemReadOnlySpanStruct
+    ) and
+    not this instanceof SystemStringClass
+  }
+
+  override Type getElementType() { result = base.getTypeArgument(0) }
+}
+
+final class ParamsCollectionType = ParamsCollectionTypeImpl;
 
 /** Holds if `t` is a collection type. */
 predicate isCollectionType(ValueOrRefType t) {

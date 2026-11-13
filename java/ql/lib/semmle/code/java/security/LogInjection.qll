@@ -1,4 +1,6 @@
 /** Provides classes and predicates related to Log Injection vulnerabilities. */
+overlay[local?]
+module;
 
 import java
 private import semmle.code.java.dataflow.DataFlow
@@ -34,6 +36,10 @@ private class DefaultLogInjectionSink extends LogInjectionSink {
 private class DefaultLogInjectionSanitizer extends LogInjectionSanitizer instanceof SimpleTypeSanitizer
 { }
 
+private class ExternalLogInjectionSanitizer extends LogInjectionSanitizer {
+  ExternalLogInjectionSanitizer() { barrierNode(this, "log-injection") }
+}
+
 private class LineBreaksLogInjectionSanitizer extends LogInjectionSanitizer {
   LineBreaksLogInjectionSanitizer() {
     logInjectionSanitizer(this.asExpr())
@@ -42,51 +48,70 @@ private class LineBreaksLogInjectionSanitizer extends LogInjectionSanitizer {
   }
 }
 
-private predicate stringMethodCall(
-  MethodCall ma, CompileTimeConstantExpr arg0, CompileTimeConstantExpr arg1
-) {
-  ma.getMethod().getDeclaringType() instanceof TypeString and
-  arg0 = ma.getArgument(0) and
-  arg1 = ma.getArgument(1)
-}
-
-private predicate stringMethodArgument(CompileTimeConstantExpr arg) {
-  stringMethodCall(_, arg, _) or stringMethodCall(_, _, arg)
-}
-
 bindingset[match]
 pragma[inline_late]
-private predicate stringMethodArgumentValueMatches(CompileTimeConstantExpr const, string match) {
-  stringMethodArgument(const) and
-  const.getStringValue().matches(match)
+private predicate stringOrCharValueMatches(CompileTimeConstantExpr const, string match) {
+  const.getStringOrCharValue().matches(match)
+}
+
+private predicate containsLineBreak(CompileTimeConstantExpr const) {
+  stringOrCharValueMatches(const, ["%\n%", "%\r%"])
+}
+
+private predicate containsBothLineBreaks(CompileTimeConstantExpr const) {
+  stringOrCharValueMatches(const, "%\n%") and stringOrCharValueMatches(const, "%\r%")
+}
+
+private predicate regexRemovesLineBreaks(CompileTimeConstantExpr target) {
+  // Replace anything not in an allow list
+  target.getStringValue().matches("[^%]") and
+  not stringOrCharValueMatches(target, "%" + ["\n", "\r", "\\n", "\\r", "\\R"] + "%")
+  or
+  // Replace line breaks
+  target.getStringValue() = ["\n", "\r", "\\n", "\\r", "\\R"]
+}
+
+private predicate replacementRemovesLineBreaks(
+  StringReplacement replacement, CompileTimeConstantExpr target
+) {
+  target = replacement.getMatchExpression() and
+  (
+    replacement.matchExpressionIsCharacterSet() and containsBothLineBreaks(target)
+    or
+    replacement.matchExpressionIsRegex() and regexRemovesLineBreaks(target)
+    or
+    not replacement.matchExpressionIsCharacterSet() and
+    not replacement.matchExpressionIsRegex() and
+    target.getStringOrCharValue() = ["\n", "\r"]
+  )
+}
+
+private predicate removalRemovesLineBreaks(StringRemoval removal, CompileTimeConstantExpr target) {
+  target = removal.getMatchExpression() and
+  (
+    removal.matchExpressionIsCharacterSet() and containsBothLineBreaks(target)
+    or
+    removal.matchExpressionIsRegex() and regexRemovesLineBreaks(target)
+    or
+    not removal.matchExpressionIsCharacterSet() and
+    not removal.matchExpressionIsRegex() and
+    target.getStringOrCharValue() = ["\n", "\r"]
+  )
 }
 
 /**
- * Holds if the return value of `ma` is sanitized against log injection attacks
- * by removing line breaks from it.
+ * Holds if `e` is sanitized against log injection attacks by removing line
+ * breaks from it.
  */
-private predicate logInjectionSanitizer(MethodCall ma) {
-  exists(CompileTimeConstantExpr target, CompileTimeConstantExpr replacement |
-    stringMethodCall(ma, target, replacement) and
-    not stringMethodArgumentValueMatches(replacement, ["%\n%", "%\r%"])
-  |
-    ma.getMethod().hasName("replace") and
-    not replacement.getIntValue() = [10, 13] and
-    (
-      target.getIntValue() = [10, 13] or // 10 == '\n', 13 == '\r'
-      target.getStringValue() = ["\n", "\r"]
-    )
-    or
-    ma.getMethod().hasName("replaceAll") and
-    (
-      // Replace anything not in an allow list
-      target.getStringValue().matches("[^%]") and
-      not stringMethodArgumentValueMatches(target, "%" + ["\n", "\r", "\\n", "\\r", "\\R"] + "%")
-      or
-      // Replace line breaks
-      target.getStringValue() = ["\n", "\r", "\\n", "\\r", "\\R"]
-    )
+private predicate logInjectionSanitizer(Expr e) {
+  replacementRemovesLineBreaks(e, _) and
+  exists(CompileTimeConstantExpr replacement |
+    replacement = e.(StringReplacement).getReplacement() and
+    exists(replacement.getStringOrCharValue()) and
+    not containsLineBreak(replacement)
   )
+  or
+  removalRemovesLineBreaks(e, _)
 }
 
 /**
@@ -94,41 +119,52 @@ private predicate logInjectionSanitizer(MethodCall ma) {
  * by checking if there are line breaks in `e`.
  */
 private predicate logInjectionGuard(Guard g, Expr e, boolean branch) {
-  exists(MethodCall ma, CompileTimeConstantExpr target |
-    ma = g and
-    target = ma.getArgument(0)
-  |
-    ma.getMethod().getDeclaringType() instanceof TypeString and
-    ma.getMethod().hasName("contains") and
-    target.getStringValue() = ["\n", "\r"] and
-    e = ma.getQualifier() and
-    branch = false
-    or
-    ma.getMethod().hasName("matches") and
-    (
-      ma.getMethod().getDeclaringType() instanceof TypeString and
-      e = ma.getQualifier()
-      or
-      ma.getMethod().getDeclaringType().hasQualifiedName("java.util.regex", "Pattern") and
-      e = ma.getArgument(1)
-    ) and
-    (
-      // Allow anything except line breaks
-      (
-        not target.getStringValue().matches("%[^%]%") and
-        not target.getStringValue().matches("%" + ["\n", "\r", "\\n", "\\r", "\\R"] + "%")
-        or
-        target.getStringValue().matches("%[^%" + ["\n", "\r", "\\n", "\\r", "\\R"] + "%]%")
-      ) and
-      branch = true
-      or
-      // Disallow line breaks
-      (
-        not target.getStringValue().matches("%[^%" + ["\n", "\r", "\\n", "\\r", "\\R"] + "%]%") and
-        // Assuming a regex containing line breaks is correctly matching line breaks in a string
-        target.getStringValue().matches("%" + ["\n", "\r", "\\n", "\\r", "\\R"] + "%")
-      ) and
-      branch = false
-    )
+  exists(StringSubstringMatch match, boolean matchingBranch | match = g |
+    match.getMatchExpression().(CompileTimeConstantExpr).getStringValue() = ["\n", "\r"] and
+    e = match.getASanitizedExpr() and
+    match.hasSubstringOnBranch(matchingBranch) and
+    branch = matchingBranch.booleanNot()
   )
+  or
+  exists(StringCharacterSetMatch match, CompileTimeConstantExpr characters, boolean matchingBranch |
+    match = g and
+    characters = match.getMatchExpression() and
+    containsBothLineBreaks(characters) and
+    e = match.getASanitizedExpr() and
+    match.hasMatchingCharacterOnBranch(matchingBranch) and
+    branch = matchingBranch.booleanNot()
+  )
+  or
+  exists(RegexMatch rm, CompileTimeConstantExpr target |
+    rm = g and
+    target = rm.getRegex() and
+    e = rm.getASanitizedExpr()
+  |
+    regexPreventsLogInjection(target.getStringValue(), branch)
+  )
+}
+
+/**
+ * Holds if `regex` matches against a pattern that allows anything except
+ * line breaks when `branch` is `true`, or a pattern that matches line breaks
+ * when `branch` is `false`.
+ */
+bindingset[regex]
+private predicate regexPreventsLogInjection(string regex, boolean branch) {
+  // Allow anything except line breaks
+  (
+    not regex.matches("%[^%]%") and
+    not regex.matches("%" + ["\n", "\r", "\\n", "\\r", "\\R"] + "%")
+    or
+    regex.matches("%[^%" + ["\n", "\r", "\\n", "\\r", "\\R"] + "%]%")
+  ) and
+  branch = true
+  or
+  // Disallow line breaks
+  (
+    not regex.matches("%[^%" + ["\n", "\r", "\\n", "\\r", "\\R"] + "%]%") and
+    // Assuming a regex containing line breaks is correctly matching line breaks in a string
+    regex.matches("%" + ["\n", "\r", "\\n", "\\r", "\\R"] + "%")
+  ) and
+  branch = false
 }

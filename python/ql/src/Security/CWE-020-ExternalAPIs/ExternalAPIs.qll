@@ -6,7 +6,7 @@
 private import python
 import semmle.python.dataflow.new.DataFlow
 private import semmle.python.dataflow.new.TaintTracking
-private import semmle.python.dataflow.new.RemoteFlowSources
+private import semmle.python.Concepts
 private import semmle.python.ApiGraphs
 private import semmle.python.dataflow.new.internal.DataFlowPrivate as DataFlowPrivate
 private import semmle.python.dataflow.new.internal.TaintTrackingPrivate as TaintTrackingPrivate
@@ -167,31 +167,22 @@ class ExternalApiDataNode extends DataFlow::Node {
   }
 }
 
-/**
- * DEPRECATED: Use `XmlBombFlow` module instead.
- *
- * A configuration for tracking flow from `RemoteFlowSource`s to `ExternalApiDataNode`s.
- */
-deprecated class UntrustedDataToExternalApiConfig extends TaintTracking::Configuration {
-  UntrustedDataToExternalApiConfig() { this = "UntrustedDataToExternalAPIConfig" }
-
-  override predicate isSource(DataFlow::Node source) { source instanceof RemoteFlowSource }
-
-  override predicate isSink(DataFlow::Node sink) { sink instanceof ExternalApiDataNode }
-}
-
 private module UntrustedDataToExternalApiConfig implements DataFlow::ConfigSig {
-  predicate isSource(DataFlow::Node source) { source instanceof RemoteFlowSource }
+  predicate isSource(DataFlow::Node source) { source instanceof ActiveThreatModelSource }
 
   predicate isSink(DataFlow::Node sink) { sink instanceof ExternalApiDataNode }
+
+  predicate observeDiffInformedIncrementalMode() {
+    none() // Not used for PR analysis
+  }
 }
 
-/** Global taint-tracking from `RemoteFlowSource`s to `ExternalApiDataNode`s. */
+/** Global taint-tracking from active threat-model sources to `ExternalApiDataNode`s. */
 module UntrustedDataToExternalApiFlow = TaintTracking::Global<UntrustedDataToExternalApiConfig>;
 
 /** A node representing untrusted data being passed to an external API. */
 class UntrustedExternalApiDataNode extends ExternalApiDataNode {
-  UntrustedExternalApiDataNode() { UntrustedDataToExternalApiFlow::flow(_, this) }
+  UntrustedExternalApiDataNode() { UntrustedDataToExternalApiFlow::flowTo(this) }
 
   /** Gets a source of untrusted data which is passed to this external API data node. */
   DataFlow::Node getAnUntrustedSource() { UntrustedDataToExternalApiFlow::flow(result, this) }

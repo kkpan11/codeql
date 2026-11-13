@@ -1,12 +1,12 @@
 /**
- * Provides classes for working with [Fastify](https://www.fastify.io/) applications.
+ * Provides classes for working with [Fastify](https://www.fastify.dev/) applications.
  */
 
 import javascript
 import semmle.javascript.frameworks.HTTP
 
 /**
- * Provides classes for working with [Fastify](https://www.fastify.io/) applications.
+ * Provides classes for working with [Fastify](https://www.fastify.dev/) applications.
  */
 module Fastify {
   /**
@@ -21,6 +21,27 @@ module Fastify {
     StandardServerDefinition() { this = DataFlow::moduleImport("fastify").getAnInvocation() }
   }
 
+  /**
+   * Gets the name of a chainable Fastify configuration method, that is, a method that
+   * configures the server instance and returns that same instance, so that a call to it
+   * still refers to the server.
+   *
+   * Plugin, hook and route registration (`register`, `addHook`, `onClose`, and the
+   * shorthand route methods) returns the server as well, but is deliberately excluded
+   * here, because it already has a meaning in the routing model for Fastify. The
+   * lifecycle methods `after` and `ready` are excluded too: `after` returns the server
+   * only when it is given a callback, and `ready` never does.
+   */
+  private string chainableConfigMethodName() {
+    result =
+      [
+        "withTypeProvider", "addSchema", "addHttpMethod", "addContentTypeParser", "decorate",
+        "decorateRequest", "decorateReply", "setValidatorCompiler", "setSerializerCompiler",
+        "setSchemaController", "setReplySerializer", "setSchemaErrorFormatter", "setErrorHandler",
+        "setNotFoundHandler", "setGenReqId", "setChildLoggerFactory"
+      ]
+  }
+
   /** Gets a data flow node referring to a fastify server. */
   private DataFlow::SourceNode server(DataFlow::SourceNode creation, DataFlow::TypeTracker t) {
     t.start() and
@@ -30,6 +51,11 @@ module Fastify {
     // server.register((serverAlias) => ..., { options })
     t.start() and
     result = pluginCallback(creation).(DataFlow::FunctionNode).getParameter(0)
+    or
+    // server.withTypeProvider<T>(), server.setValidatorCompiler(...), and friends return
+    // the server itself, so the result of such a call still refers to it.
+    t.start() and
+    result = server(creation).getAMethodCall(chainableConfigMethodName())
     or
     exists(DataFlow::TypeTracker t2 | result = server(creation, t2).track(t2, t))
   }
@@ -138,7 +164,8 @@ module Fastify {
 
     RouteSetup() {
       this = server(server).getAMethodCall(methodName) and
-      methodName = ["route", "get", "head", "post", "put", "delete", "options", "patch"]
+      methodName =
+        ["route", "get", "head", "post", "put", "delete", "options", "patch", "addHook", "all"]
     }
 
     override DataFlow::SourceNode getARouteHandler() {
@@ -164,11 +191,17 @@ module Fastify {
 
   private class ShorthandRoutingTreeSetup extends Routing::RouteSetup::MethodCall instanceof RouteSetup
   {
-    ShorthandRoutingTreeSetup() { not this.getMethodName() = "route" }
+    ShorthandRoutingTreeSetup() { not this.getMethodName() = ["route", "addHook"] }
 
     override string getRelativePath() { result = this.getArgument(0).getStringValue() }
 
     override Http::RequestMethodName getHttpMethod() { result = this.getMethodName().toUpperCase() }
+  }
+
+  private class AddHookRouteSetup extends Routing::RouteSetup::MethodCall instanceof RouteSetup {
+    AddHookRouteSetup() { this.getMethodName() = "addHook" }
+
+    override predicate isMiddlewareSetup() { any() }
   }
 
   /** Gets the name of the `n`th handler function that can be installed a route setup, in order of execution. */
@@ -322,7 +355,11 @@ module Fastify {
     ResponseSendArgument() {
       this = rh.getAResponseSource().ref().getAMethodCall("send").getArgument(0)
       or
-      this = rh.(DataFlow::FunctionNode).getAReturn()
+      exists(RouteSetup setup |
+        rh = setup.getARouteHandler() and
+        this = rh.(DataFlow::FunctionNode).getAReturn() and
+        setup.getMethodName() != "addHook"
+      )
     }
 
     override RouteHandler getRouteHandler() { result = rh }

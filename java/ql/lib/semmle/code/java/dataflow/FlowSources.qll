@@ -1,6 +1,8 @@
 /**
  * Provides classes representing various flow sources for taint tracking.
  */
+overlay[local?]
+module;
 
 import java
 import semmle.code.java.dataflow.DataFlow
@@ -28,6 +30,8 @@ import semmle.code.java.frameworks.Guice
 import semmle.code.java.frameworks.struts.StrutsActions
 import semmle.code.java.frameworks.Thrift
 import semmle.code.java.frameworks.javaee.jsf.JSFRenderer
+import semmle.code.java.frameworks.micronaut.MicronautController
+import semmle.code.java.frameworks.micronaut.MicronautWebSocket
 private import semmle.code.java.dataflow.ExternalFlow
 private import codeql.threatmodels.ThreatModels
 
@@ -42,11 +46,10 @@ abstract class SourceNode extends DataFlow::Node {
 }
 
 /**
- * A class of data flow sources that respects the
- * current threat model configuration.
+ * A data flow source that is enabled in the current threat model configuration.
  */
-class ThreatModelFlowSource extends DataFlow::Node {
-  ThreatModelFlowSource() {
+class ActiveThreatModelSource extends DataFlow::Node {
+  ActiveThreatModelSource() {
     exists(string kind |
       // Specific threat model.
       currentThreatModel(kind) and
@@ -119,21 +122,6 @@ private predicate variableStep(Expr tracked, VarAccess sink) {
   )
 }
 
-private class ReverseDnsSource extends RemoteFlowSource {
-  ReverseDnsSource() {
-    // Try not to trigger on `localhost`.
-    exists(MethodCall m | m = this.asExpr() |
-      m.getMethod() instanceof ReverseDnsMethod and
-      not exists(MethodCall l |
-        (variableStep(l, m.getQualifier()) or l = m.getQualifier()) and
-        l.getMethod().getName() = "getLocalHost"
-      )
-    )
-  }
-
-  override string getSourceType() { result = "reverse DNS lookup" }
-}
-
 private class MessageBodyReaderParameterSource extends RemoteFlowSource {
   MessageBodyReaderParameterSource() {
     exists(MessageBodyReaderRead m |
@@ -193,6 +181,28 @@ private class AndroidExternalStorageSource extends RemoteFlowSource {
   override string getSourceType() { result = "Android external storage" }
 }
 
+private class MicronautHttpInputParameterSource extends RemoteFlowSource {
+  MicronautHttpInputParameterSource() {
+    this.asParameter() = any(MicronautRequestMappingParameter mrmp | mrmp.isTaintedInput())
+  }
+
+  override string getSourceType() { result = "Micronaut HTTP input parameter" }
+}
+
+private class MicronautWebSocketParameterSource extends RemoteFlowSource {
+  MicronautWebSocketParameterSource() { this.asParameter() instanceof MicronautWebSocketParameter }
+
+  override string getSourceType() { result = "Micronaut WebSocket parameter" }
+}
+
+private class MicronautErrorHandlerSource extends RemoteFlowSource {
+  MicronautErrorHandlerSource() {
+    this.asParameter() = any(MicronautErrorHandler h).getARemoteParameter()
+  }
+
+  override string getSourceType() { result = "Micronaut error handler parameter" }
+}
+
 /** Class for `tainted` user input. */
 abstract class UserInput extends SourceNode { }
 
@@ -206,24 +216,6 @@ private class RemoteUserInput extends UserInput instanceof RemoteFlowSource {
 /** A node with input that may be controlled by a local user. */
 abstract class LocalUserInput extends UserInput {
   override string getThreatModel() { result = "local" }
-}
-
-/**
- * DEPRECATED: Use the threat models feature.
- * That is, use `ThreatModelFlowSource` as the class of nodes for sources
- * and set up the threat model configuration to filter source nodes.
- * Alternatively, use `getThreatModel` to filter nodes to create the
- * class of nodes you need.
- *
- * A node with input from the local environment, such as files, standard in,
- * environment variables, and main method parameters.
- */
-deprecated class EnvInput extends DataFlow::Node {
-  EnvInput() {
-    this instanceof EnvironmentInput or
-    this instanceof CliInput or
-    this instanceof FileInput
-  }
 }
 
 /**
@@ -249,12 +241,21 @@ private class CliInput extends LocalUserInput {
     exists(Field f | this.asExpr() = f.getAnAccess() |
       f.getAnAnnotation().getType().getQualifiedName() = "org.kohsuke.args4j.Argument"
     )
-    or
+  }
+
+  override string getThreatModel() { result = "commandargs" }
+}
+
+/**
+ * A node with input from stdin.
+ */
+private class StdinInput extends LocalUserInput {
+  StdinInput() {
     // Access to `System.in`.
     exists(Field f | this.asExpr() = f.getAnAccess() | f instanceof SystemIn)
   }
 
-  override string getThreatModel() { result = "commandargs" }
+  override string getThreatModel() { result = "stdin" }
 }
 
 /**
@@ -268,17 +269,6 @@ private class FileInput extends LocalUserInput {
 
   override string getThreatModel() { result = "file" }
 }
-
-/**
- * DEPRECATED: Use the threat models feature.
- * That is, use `ThreatModelFlowSource` as the class of nodes for sources
- * and set up the threat model configuration to filter source nodes.
- * Alternatively, use `getThreatModel` to filter nodes to create the
- * class of nodes you need.
- *
- * A node with input from a database.
- */
-deprecated class DatabaseInput = DbInput;
 
 /**
  * A node with input from a database.
@@ -385,6 +375,24 @@ class AndroidJavascriptInterfaceMethodParameter extends RemoteFlowSource {
 
   override string getSourceType() {
     result = "Parameter of method with JavascriptInterface annotation"
+  }
+}
+
+/** A node with input that comes from a reverse DNS lookup. */
+abstract class ReverseDnsUserInput extends UserInput {
+  override string getThreatModel() { result = "reverse-dns" }
+}
+
+private class ReverseDnsSource extends ReverseDnsUserInput {
+  ReverseDnsSource() {
+    // Try not to trigger on `localhost`.
+    exists(MethodCall m | m = this.asExpr() |
+      m.getMethod() instanceof ReverseDnsMethod and
+      not exists(MethodCall l |
+        (variableStep(l, m.getQualifier()) or l = m.getQualifier()) and
+        (l.getMethod().getName() = "getLocalHost" or l.getMethod().getName() = "getLoopbackAddress")
+      )
+    )
   }
 }
 

@@ -1,6 +1,8 @@
 /**
  * Provides predicates and classes for working with string operations.
  */
+overlay[local?]
+module;
 
 import go
 
@@ -102,6 +104,13 @@ module StringOps {
       override boolean getPolarity() { result = expr.getPolarity() }
     }
 
+    pragma[noinline]
+    private DataFlow::ElementReadNode getReadOfFirstChar(DataFlow::Node str) {
+      pragma[only_bind_into](result).getIndex().getIntValue() = 0 and
+      str = result.getBase() and
+      str.getType().getUnderlyingType() instanceof StringType
+    }
+
     /**
      * Holds if `eq` is of the form `str[0] == rhs` or `str[0] != rhs`.
      */
@@ -109,12 +118,8 @@ module StringOps {
     private predicate comparesFirstCharacter(
       DataFlow::EqualityTestNode eq, DataFlow::Node str, DataFlow::Node rhs
     ) {
-      exists(DataFlow::ElementReadNode read |
-        eq.hasOperands(globalValueNumber(read).getANode(), rhs) and
-        str = read.getBase() and
-        str.getType().getUnderlyingType() instanceof StringType and
-        read.getIndex().getIntValue() = 0
-      )
+      eq.hasOperands(globalValueNumber(pragma[only_bind_out](getReadOfFirstChar(str))).getANode(),
+        rhs)
     }
 
     /**
@@ -133,6 +138,18 @@ module StringOps {
       override boolean getPolarity() { result = expr.getPolarity() }
     }
 
+    bindingset[slice, substring]
+    pragma[inline_late]
+    private predicate hasPrefixSliceUpperBound(DataFlow::SliceNode slice, DataFlow::Node substring) {
+      exists(DataFlow::CallNode len |
+        len = Builtin::len().getACall() and
+        len.getArgument(0) = globalValueNumber(substring).getANode() and
+        slice.getHigh() = globalValueNumber(len).getANode()
+      )
+      or
+      substring.getStringValue().length() = slice.getHigh().getIntValue()
+    }
+
     /**
      * A comparison of the form `x[:len(y)] == y`.
      */
@@ -142,16 +159,9 @@ module StringOps {
 
       HasPrefix_Substring() {
         this.eq(_, slice, substring) and
-        slice.getLow().getIntValue() = 0 and
-        (
-          exists(DataFlow::CallNode len |
-            len = Builtin::len().getACall() and
-            len.getArgument(0) = globalValueNumber(substring).getANode() and
-            slice.getHigh() = globalValueNumber(len).getANode()
-          )
-          or
-          substring.getStringValue().length() = slice.getHigh().getIntValue()
-        )
+        // An omitted lower bound (`x[:len(y)]`) is implicitly `0`.
+        (not exists(slice.getLow()) or slice.getLow().getIntValue() = 0) and
+        hasPrefixSliceUpperBound(slice, substring)
       }
 
       override DataFlow::Node getBaseString() { result = slice.getBase() }
@@ -303,11 +313,12 @@ module StringOps {
      */
     class StringFormatCall extends DataFlow::CallNode {
       string fmt;
-      Range f;
 
       StringFormatCall() {
-        this = f.getACall() and
-        fmt = this.getArgument(f.getFormatStringIndex()).getStringValue() and
+        exists(Range f |
+          this = f.getACall() and
+          fmt = this.getArgument(f.getFormatStringIndex()).getStringValue()
+        ) and
         fmt.regexpMatch(getFormatComponentRegex() + "*")
       }
 
@@ -545,20 +556,25 @@ module StringOps {
         else result = "concatenation element"
     }
 
+    /** Gets the location of this element. */
+    Location getLocation() { result = this.asNode().getLocation() }
+
     /**
+     * DEPRECATED: Use `getLocation()` instead.
+     *
      * Holds if this element is at the specified location.
      * The location spans column `startcolumn` of line `startline` to
      * column `endcolumn` of line `endline` in file `filepath`.
      * For more information, see
      * [Locations](https://codeql.github.com/docs/writing-codeql-queries/providing-locations-in-codeql-queries/).
      */
-    predicate hasLocationInfo(
+    deprecated predicate hasLocationInfo(
       string filepath, int startline, int startcolumn, int endline, int endcolumn
     ) {
-      this.asNode().hasLocationInfo(filepath, startline, startcolumn, endline, endcolumn)
+      this.getLocation().hasLocationInfo(filepath, startline, startcolumn, endline, endcolumn)
       or
       // use dummy location for elements that don't have a corresponding node
-      not exists(this.asNode()) and
+      not exists(this.getLocation()) and
       filepath = "" and
       startline = 0 and
       startcolumn = 0 and

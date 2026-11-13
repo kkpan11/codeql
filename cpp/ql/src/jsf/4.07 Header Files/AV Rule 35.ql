@@ -7,7 +7,8 @@
  * @problem.severity recommendation
  * @precision high
  * @id cpp/missing-header-guard
- * @tags efficiency
+ * @tags quality
+ *       efficiency
  *       maintainability
  *       modularity
  *       external/jsf
@@ -37,7 +38,7 @@ abstract class MaybePreprocessorDirective extends TMaybePreprocessorDirective {
 class NoPreprocessorDirective extends TNoPreprocessorDirective, MaybePreprocessorDirective {
   override string toString() { result = "" }
 
-  override Location getLocation() { result instanceof UnknownDefaultLocation }
+  override Location getLocation() { result instanceof UnknownLocation }
 }
 
 class SomePreprocessorDirective extends TSomePreprocessorDirective, MaybePreprocessorDirective {

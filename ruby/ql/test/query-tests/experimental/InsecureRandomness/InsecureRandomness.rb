@@ -2,8 +2,8 @@ require 'securerandom'
 
 def generate_password_1(length)
   chars = ('a'..'z').to_a + ('A'..'Z').to_a + ('0'..'9').to_a + ['!', '@', '#', '$', '%']
-  # BAD: rand is not cryptographically secure
-  password = (1..length).collect { chars[rand(chars.size)] }.join
+  # BAD: rand is not cryptographically secure
+  password = (1..length).collect { chars[rand(chars.size)] }.join # $ Alert
 end
 
 def generate_password_2(length)

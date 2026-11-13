@@ -1,3 +1,6 @@
+overlay[local?]
+module;
+
 import java
 import semmle.code.java.deadcode.DeadCode
 import semmle.code.java.deadcode.frameworks.CamelEntryPoints
@@ -7,6 +10,7 @@ import semmle.code.java.deadcode.StrutsEntryPoints
 import semmle.code.java.deadcode.TestEntryPoints
 import semmle.code.java.deadcode.WebEntryPoints
 import semmle.code.java.frameworks.javaee.JavaServerFaces
+import semmle.code.java.frameworks.javaee.Persistence
 import semmle.code.java.frameworks.JAXB
 import semmle.code.java.frameworks.JaxWS
 import semmle.code.java.JMX
@@ -168,9 +172,6 @@ class ReflectiveGetMethodCallEntryPoint extends EntryPoint, ReflectiveGetMethodC
   }
 }
 
-/** DEPRECATED: Alias for `ReflectiveGetMethodCallEntryPoint`. */
-deprecated class ReflectiveMethodAccessEntryPoint = ReflectiveGetMethodCallEntryPoint;
-
 /**
  * Classes that are entry points recognised by annotations.
  */
@@ -315,7 +316,7 @@ class FacesComponentReflectivelyConstructedClass extends ReflectivelyConstructed
  * Entry point for EJB home interfaces.
  */
 class EjbHome extends Interface, EntryPoint {
-  EjbHome() { this.getAnAncestor().hasQualifiedName("javax.ejb", "EJBHome") }
+  EjbHome() { this.getAnAncestor().hasQualifiedName(javaxOrJakarta() + ".ejb", "EJBHome") }
 
   override Callable getALiveCallable() { result = this.getACallable() }
 }
@@ -324,7 +325,7 @@ class EjbHome extends Interface, EntryPoint {
  * Entry point for EJB object interfaces.
  */
 class EjbObject extends Interface, EntryPoint {
-  EjbObject() { this.getAnAncestor().hasQualifiedName("javax.ejb", "EJBObject") }
+  EjbObject() { this.getAnAncestor().hasQualifiedName(javaxOrJakarta() + ".ejb", "EJBObject") }
 
   override Callable getALiveCallable() { result = this.getACallable() }
 }
@@ -340,7 +341,9 @@ class GsonDeserializationEntryPoint extends ReflectivelyConstructedClass {
 class JaxbDeserializationEntryPoint extends ReflectivelyConstructedClass {
   JaxbDeserializationEntryPoint() {
     // A class can be deserialized by JAXB if it's an `XmlRootElement`...
-    this.getAnAnnotation().getType().hasQualifiedName("javax.xml.bind.annotation", "XmlRootElement")
+    this.getAnAnnotation()
+        .getType()
+        .hasQualifiedName(javaxOrJakarta() + ".xml.bind.annotation", "XmlRootElement")
     or
     // ... or the type of an `XmlElement` field.
     exists(Field elementField |
@@ -398,7 +401,7 @@ class PersistencePropertyMethod extends CallableEntryPoint {
       this = e.getACallable() and
       (
         e.getAccessType() = "property" or
-        this.hasAnnotation("javax.persistence", "Access")
+        this.hasAnnotation(getAPersistencePackageName(), "Access")
       ) and
       (
         this.getName().matches("get%") or

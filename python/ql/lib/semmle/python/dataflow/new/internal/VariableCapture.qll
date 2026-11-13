@@ -1,4 +1,6 @@
 /** Provides logic related to captured variables. */
+overlay[local]
+module;
 
 private import python
 private import DataFlowPublic
@@ -12,7 +14,7 @@ private import codeql.dataflow.VariableCapture as Shared
 // The first is the main implementation, the second is a performance motivated restriction.
 // The restriction is to clear any `CapturedVariableContent` before writing a new one
 // to avoid long access paths (see the link for a nice explanation).
-private module CaptureInput implements Shared::InputSig<Location> {
+private module CaptureInput implements Shared::InputSig<Location, Cfg::BasicBlock> {
   private import python as PY
 
   additional class ExprCfgNode extends ControlFlowNode {
@@ -23,20 +25,7 @@ private module CaptureInput implements Shared::InputSig<Location> {
     predicate isConstructor() { none() }
   }
 
-  class BasicBlock extends PY::BasicBlock {
-    Callable getEnclosingCallable() { result = this.getScope() }
-
-    // Note `PY:BasicBlock` does not have a `getLocation`.
-    // (Instead it has a complicated location info logic.)
-    // Using the location of the first node is simple
-    // and we just need a way to identify the basic block
-    // during debugging, so this will be serviceable.
-    Location getLocation() { result = super.getNode(0).getLocation() }
-  }
-
-  BasicBlock getImmediateBasicBlockDominator(BasicBlock bb) { result = bb.getImmediateDominator() }
-
-  BasicBlock getABasicBlockSuccessor(BasicBlock bb) { result = bb.getASuccessor() }
+  Callable basicBlockGetEnclosingCallable(Cfg::BasicBlock bb) { result = bb.getScope() }
 
   class CapturedVariable extends LocalVariable {
     Function f;
@@ -66,23 +55,23 @@ private module CaptureInput implements Shared::InputSig<Location> {
   }
 
   class Expr extends ExprCfgNode {
-    predicate hasCfgNode(BasicBlock bb, int i) { this = bb.getNode(i) }
+    predicate hasCfgNode(Cfg::BasicBlock bb, int i) { this = bb.getNode(i) }
   }
 
   class VariableWrite extends ControlFlowNode {
     CapturedVariable v;
 
-    VariableWrite() { this = v.getAStore().getAFlowNode().(DefinitionNode).getValue() }
+    VariableWrite() { exists(DefinitionNode d | d.getNode() = v.getAStore() | this = d.getValue()) }
 
     CapturedVariable getVariable() { result = v }
 
-    predicate hasCfgNode(BasicBlock bb, int i) { this = bb.getNode(i) }
+    predicate hasCfgNode(Cfg::BasicBlock bb, int i) { this = bb.getNode(i) }
   }
 
   class VariableRead extends Expr {
     CapturedVariable v;
 
-    VariableRead() { this = v.getALoad().getAFlowNode() }
+    VariableRead() { this.getNode() = v.getALoad() }
 
     CapturedVariable getVariable() { result = v }
   }
@@ -118,11 +107,22 @@ class CapturedVariable = CaptureInput::CapturedVariable;
 
 class ClosureExpr = CaptureInput::ClosureExpr;
 
-module Flow = Shared::Flow<Location, CaptureInput>;
+module Flow = Shared::Flow<Location, Cfg, CaptureInput>;
 
 private Flow::ClosureNode asClosureNode(Node n) {
   result = n.(SynthCaptureNode).getSynthesizedCaptureNode()
   or
+  exists(Comp comp | n = TSynthCompCapturedVariablesArgumentNode(comp) |
+    result.(Flow::ExprNode).getExpr().getNode() = comp
+  )
+  or
+  // For captured variable argument nodes (and their post-update variants), we use the closure node
+  // for the underlying node.
+  result = asClosureNode(n.(SynthCapturedVariablesArgumentNode).getUnderlyingNode())
+  or
+  result = asClosureNode(n.(SynthCapturedVariablesArgumentPostUpdateNode).getUnderlyingNode())
+  or
+  // TODO: Should the `Comp`s above be excluded here?
   result.(Flow::ExprNode).getExpr() = n.(CfgNode).getNode()
   or
   result.(Flow::VariableWriteSourceNode).getVariableWrite() = n.(CfgNode).getNode()

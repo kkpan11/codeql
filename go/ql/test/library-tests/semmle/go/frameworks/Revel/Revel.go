@@ -64,10 +64,10 @@ func (c myAppController) accessingParamsJSONIsUnsafe() {
 	sink(val2["name"].(string))
 }
 
-func (c myAppController) rawRead() { // $ responsebody='argument corresponding to c'
+func (c myAppController) rawRead() { // $ responsebody='c'
 	c.ViewArgs["Foo"] = "<p>raw HTML</p>" // $ responsebody='"<p>raw HTML</p>"'
 	c.ViewArgs["Bar"] = "<p>not raw HTML</p>"
-	c.ViewArgs["Foo"] = c.Params.Query // $ responsebody='selection of Query'
+	c.ViewArgs["Foo"] = c.Params.Query // $ responsebody='selection of Query' Alert[go/reflected-xss]
 	c.Render()
 }
 

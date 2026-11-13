@@ -5,9 +5,9 @@
  * @problem.severity warning
  * @precision medium
  * @id cs/linq/inconsistent-enumeration
- * @tags reliability
- *       maintainability
- *       language-features
+ * @tags quality
+ *       reliability
+ *       correctness
  *       external/cwe/cwe-834
  */
 
@@ -38,7 +38,7 @@ predicate likelyNonRepeatableSequence(IEnumerableSequence seq) {
 
 /** An access to an enumerable sequence that potentially consumes sequence elements. */
 predicate potentiallyConsumingAccess(VariableAccess va) {
-  exists(ForeachStmt fes | va = fes.getIterableExpr())
+  exists(ForEachStmt fes | va = fes.getIterableExpr())
   or
   exists(MethodCall mc |
     va = mc.getArgument(0) and
@@ -50,7 +50,7 @@ predicate potentiallyConsumingAccess(VariableAccess va) {
 Expr sequenceSource(IEnumerableSequence seq) {
   result = seq.getInitializer()
   or
-  exists(Assignment a | a.getLValue() = seq.getAnAccess() and result = a.getRValue())
+  exists(Assignment a | a.getLeftOperand() = seq.getAnAccess() and result = a.getRightOperand())
 }
 
 from IEnumerableSequence seq, VariableAccess va

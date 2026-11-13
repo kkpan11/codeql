@@ -5,6 +5,8 @@
  * Note that unlike `TypeTracker.qll`, this library only performs
  * local tracking within a function.
  */
+overlay[local]
+module;
 
 private import python
 import DataFlowPublic
@@ -67,7 +69,7 @@ class LocalSourceNode extends Node {
     or
     // We explicitly include any read of a global variable, as some of these may have local flow going
     // into them.
-    this = any(ModuleVariableNode mvn).getARead()
+    this = any(ModuleVariableNode v).getALocalRead()
     or
     // We include all scope entry definitions, as these act as the local source within the scope they
     // enter.
@@ -77,6 +79,7 @@ class LocalSourceNode extends Node {
   }
 
   /** Holds if this `LocalSourceNode` can flow to `nodeTo` in one or more local flow steps. */
+  overlay[caller]
   pragma[inline]
   predicate flowsTo(Node nodeTo) { Cached::hasLocalSource(nodeTo, this) }
 
@@ -120,6 +123,11 @@ class LocalSourceNode extends Node {
   CallCfgNode getACall() { Cached::call(this, result) }
 
   /**
+   * Gets a node that has this node as its annotation.
+   */
+  Node getAnAnnotatedInstance() { Cached::annotatedInstance(this, result) }
+
+  /**
    * Gets an awaited value from this node.
    */
   Node getAnAwaited() { Cached::await(this, result) }
@@ -144,6 +152,7 @@ class LocalSourceNode extends Node {
    *
    * See `TypeTracker` for more details about how to use this.
    */
+  overlay[global]
   pragma[inline]
   LocalSourceNode track(TypeTracker t2, TypeTracker t) { t = t2.step(this, result) }
 
@@ -152,6 +161,7 @@ class LocalSourceNode extends Node {
    *
    * See `TypeBackTracker` for more details about how to use this.
    */
+  overlay[global]
   pragma[inline]
   LocalSourceNode backtrack(TypeBackTracker t2, TypeBackTracker t) { t = t2.step(result, this) }
 }
@@ -205,6 +215,7 @@ private module FutureWork {
      *
      * See `TypeTracker` for more details about how to use this.
      */
+    overlay[global]
     pragma[inline]
     TypeTrackingNode track(TypeTracker t2, TypeTracker t) { t = t2.step(this, result) }
 
@@ -213,6 +224,7 @@ private module FutureWork {
      *
      * See `TypeBackTracker` for more details about how to use this.
      */
+    overlay[global]
     pragma[inline]
     TypeTrackingNode backtrack(TypeBackTracker t2, TypeBackTracker t) { t2 = t.step(result, this) }
   }
@@ -243,7 +255,7 @@ private module Cached {
   pragma[nomagic]
   private predicate localSourceFlowStep(Node nodeFrom, Node nodeTo) {
     simpleLocalFlowStep(nodeFrom, nodeTo, _) and
-    not nodeTo = any(ModuleVariableNode v).getARead()
+    not nodeTo = any(ModuleVariableNode v).getALocalRead()
   }
 
   /**
@@ -272,6 +284,17 @@ private module Cached {
     exists(CfgNode n |
       func.flowsTo(n) and
       n = call.getFunction()
+    )
+  }
+
+  cached
+  predicate annotatedInstance(LocalSourceNode node, Node instance) {
+    exists(ExprNode n | node.flowsTo(n) |
+      instance.asCfgNode().getNode() =
+        any(AnnAssign ann | ann.getAnnotation() = n.asExpr()).getTarget()
+      or
+      instance.asCfgNode().getNode() =
+        any(Parameter p | p.getAnnotation() = n.asCfgNode().getNode())
     )
   }
 

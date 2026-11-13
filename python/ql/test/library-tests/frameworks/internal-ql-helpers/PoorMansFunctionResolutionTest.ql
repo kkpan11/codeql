@@ -1,7 +1,7 @@
 private import python
 private import semmle.python.dataflow.new.DataFlow
 private import semmle.python.frameworks.internal.PoorMansFunctionResolution
-import TestUtilities.InlineExpectationsTest
+import utils.test.InlineExpectationsTest
 
 module InlinePoorMansFunctionResolutionTest implements TestSig {
   string getARelevantTag() { result = "resolved" }
@@ -17,7 +17,9 @@ module InlinePoorMansFunctionResolutionTest implements TestSig {
       ) and
       // exclude decorator calls (which with our extractor rewrites does reference the
       // function)
-      not ref.asExpr() = func.getDefinition().(FunctionExpr).getADecoratorCall()
+      not ref.asExpr() = func.getDefinition().(FunctionExpr).getADecoratorCall() and
+      // exclude ModuleVariableNodes (which have location 0:0:0:0)
+      not ref instanceof DataFlow::ModuleVariableNode
     |
       value = func.getName() and
       tag = "resolved" and

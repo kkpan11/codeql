@@ -14,6 +14,7 @@
 
 import go
 import semmle.go.security.InsecureFeatureFlag::InsecureFeatureFlag
+private import semmle.go.controlflow.Guards
 
 /**
  * A flag indicating a check for satisfied permissions or test configuration.
@@ -52,39 +53,35 @@ class AllowCredentialsHeaderWrite extends Http::HeaderWrite {
 }
 
 module UntrustedToAllowOriginHeaderConfig implements DataFlow::ConfigSig {
-  predicate isSource(DataFlow::Node source) { source instanceof RemoteFlowSource }
+  predicate isSource(DataFlow::Node source) { source instanceof ActiveThreatModelSource }
 
   additional predicate isSinkHW(DataFlow::Node sink, AllowOriginHeaderWrite hw) {
     sink = hw.getValue()
   }
 
   predicate isBarrier(DataFlow::Node node) {
-    exists(ControlFlow::ConditionGuardNode cgn |
-      cgn.ensures(any(AllowedFlag f).getAFlag().getANode(), _)
-    |
-      cgn.dominates(node.getBasicBlock())
-    )
+    flagControls(any(AllowedFlag f), node.getBasicBlock())
   }
 
   predicate isSink(DataFlow::Node sink) { isSinkHW(sink, _) }
 }
 
 module UntrustedToAllowOriginConfigConfig implements DataFlow::ConfigSig {
-  predicate isSource(DataFlow::Node source) { source instanceof RemoteFlowSource }
+  predicate isSource(DataFlow::Node source) { source instanceof ActiveThreatModelSource }
 
-  additional predicate isSinkWrite(DataFlow::Node sink, GinCors::AllowOriginsWrite w) { sink = w }
+  additional predicate isSinkWrite(DataFlow::Node sink, UniversalOriginWrite w) { sink = w }
 
   predicate isSink(DataFlow::Node sink) { isSinkWrite(sink, _) }
 }
 
 /**
- * Tracks taint flowfor reasoning about when a `RemoteFlowSource` flows to
+ * Tracks taint flowfor reasoning about when a `ActiveThreatModelSource` flows to
  * a `HeaderWrite` that writes an `Access-Control-Allow-Origin` header's value.
  */
 module UntrustedToAllowOriginHeaderFlow = TaintTracking::Global<UntrustedToAllowOriginHeaderConfig>;
 
 /**
- * Tracks taint flowfor reasoning about when a `RemoteFlowSource` flows to
+ * Tracks taint flowfor reasoning about when a `ActiveThreatModelSource` flows to
  * a `AllowOriginsWrite` that writes an `Access-Control-Allow-Origin` header's value.
  */
 module UntrustedToAllowOriginConfigFlow = TaintTracking::Global<UntrustedToAllowOriginConfigConfig>;
@@ -102,17 +99,17 @@ predicate allowCredentialsIsSetToTrue(DataFlow::ExprNode allowOriginHW) {
       allowCredentialsHW.getResponseWriter()
   )
   or
-  exists(GinCors::AllowCredentialsWrite allowCredentialsGin |
+  exists(UniversalAllowCredentialsWrite allowCredentialsGin |
     allowCredentialsGin.getExpr().getBoolValue() = true
   |
-    allowCredentialsGin.getConfig() = allowOriginHW.(GinCors::AllowOriginsWrite).getConfig() and
-    not exists(GinCors::AllowAllOriginsWrite allowAllOrigins |
+    allowCredentialsGin.getConfig() = allowOriginHW.(UniversalOriginWrite).getConfig() and
+    not exists(UniversalAllowAllOriginsWrite allowAllOrigins |
       allowAllOrigins.getExpr().getBoolValue() = true and
       allowCredentialsGin.getConfig() = allowAllOrigins.getConfig()
     )
     or
-    allowCredentialsGin.getBase() = allowOriginHW.(GinCors::AllowOriginsWrite).getBase() and
-    not exists(GinCors::AllowAllOriginsWrite allowAllOrigins |
+    allowCredentialsGin.getBase() = allowOriginHW.(UniversalOriginWrite).getBase() and
+    not exists(UniversalAllowAllOriginsWrite allowAllOrigins |
       allowAllOrigins.getExpr().getBoolValue() = true and
       allowCredentialsGin.getBase() = allowAllOrigins.getBase()
     )
@@ -121,7 +118,7 @@ predicate allowCredentialsIsSetToTrue(DataFlow::ExprNode allowOriginHW) {
 
 /**
  * Holds if the provided `allowOriginHW` HeaderWrite's value is set using an
- * RemoteFlowSource.
+ * ActiveThreatModelSource.
  * The `message` parameter is populated with the warning message to be returned by the query.
  */
 predicate flowsFromUntrustedToAllowOrigin(DataFlow::ExprNode allowOriginHW, string message) {
@@ -150,7 +147,7 @@ predicate allowOriginIsNull(DataFlow::ExprNode allowOriginHW, string message) {
       + " is set to `true`"
   or
   allowOriginHW
-      .(GinCors::AllowOriginsWrite)
+      .(UniversalOriginWrite)
       .asExpr()
       .(SliceLit)
       .getAnElement()
@@ -169,14 +166,14 @@ class MapRead extends DataFlow::ElementReadNode {
 }
 
 module FromUntrustedConfig implements DataFlow::ConfigSig {
-  predicate isSource(DataFlow::Node source) { source instanceof RemoteFlowSource }
+  predicate isSource(DataFlow::Node source) { source instanceof ActiveThreatModelSource }
 
-  predicate isSink(DataFlow::Node sink) { isSinkCgn(sink, _) }
+  predicate isSink(DataFlow::Node sink) { isSinkGuard(sink, _) }
 
-  additional predicate isSinkCgn(DataFlow::Node sink, ControlFlow::ConditionGuardNode cgn) {
+  additional predicate isSinkGuard(DataFlow::Node sink, Guard guard) {
     exists(IfStmt ifs |
       exists(Expr operand |
-        operand = ifs.getCond().getAChildExpr*() and
+        operand = ifs.getCondition().getAChildExpr*() and
         (
           exists(DataFlow::CallExpr call | call = operand |
             call.getTarget().hasQualifiedName("strings", "HasSuffix") and
@@ -202,25 +199,25 @@ module FromUntrustedConfig implements DataFlow::ConfigSig {
         )
       )
     |
-      cgn.getCondition() = ifs.getCond()
+      guard = ifs.getCondition()
     )
   }
 }
 
 /**
- * Tracks taint flow for reasoning about when a `RemoteFlowSource` flows
+ * Tracks taint flow for reasoning about when a `ActiveThreatModelSource` flows
  * somewhere.
  */
 module FromUntrustedFlow = TaintTracking::Global<FromUntrustedConfig>;
 
 /**
- * Holds if the provided `allowOriginHW` is also destination of a `RemoteFlowSource`.
+ * Holds if the provided `allowOriginHW` is also destination of a `ActiveThreatModelSource`.
  */
 predicate flowsToGuardedByCheckOnUntrusted(DataFlow::ExprNode allowOriginHW) {
-  exists(DataFlow::Node sink, ControlFlow::ConditionGuardNode cgn |
-    FromUntrustedFlow::flowTo(sink) and FromUntrustedConfig::isSinkCgn(sink, cgn)
+  exists(DataFlow::Node sink, Guard guard |
+    FromUntrustedFlow::flowTo(sink) and FromUntrustedConfig::isSinkGuard(sink, guard)
   |
-    cgn.dominates(allowOriginHW.getBasicBlock())
+    guard.controls(allowOriginHW.getBasicBlock(), _)
   )
 }
 
@@ -233,9 +230,5 @@ where
     allowOriginIsNull(allowOriginHW, message)
   ) and
   not flowsToGuardedByCheckOnUntrusted(allowOriginHW) and
-  not exists(ControlFlow::ConditionGuardNode cgn |
-    cgn.ensures(any(AllowedFlag f).getAFlag().getANode(), _)
-  |
-    cgn.dominates(allowOriginHW.getBasicBlock())
-  )
+  not flagControls(any(AllowedFlag f), allowOriginHW.getBasicBlock())
 select allowOriginHW, message

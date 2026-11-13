@@ -3,7 +3,7 @@
  * an underlying OpenSSL or LibreSSL C library.
  */
 
-private import internal.CryptoAlgorithmNames
+private import codeql.concepts.internal.CryptoAlgorithmNames
 private import codeql.ruby.Concepts
 private import codeql.ruby.DataFlow
 private import codeql.ruby.ApiGraphs
@@ -35,37 +35,29 @@ private string rankedInsecureAlgorithm(int i) {
     )
 }
 
-private string insecureAlgorithmString(int i) {
-  i = 1 and result = rankedInsecureAlgorithm(i)
-  or
-  result = rankedInsecureAlgorithm(i) + "|" + insecureAlgorithmString(i - 1)
+private string insecureAlgorithmString() {
+  result = concat(int i | | rankedInsecureAlgorithm(i), "|" order by i desc)
 }
 
 /**
  * Gets the regular expression used for matching strings that look like they
  * contain an algorithm that is known to be insecure.
  */
-private string getInsecureAlgorithmRegex() {
-  result = algorithmRegex(insecureAlgorithmString(max(int i | exists(rankedInsecureAlgorithm(i)))))
-}
+private string getInsecureAlgorithmRegex() { result = algorithmRegex(insecureAlgorithmString()) }
 
 private string rankedSecureAlgorithm(int i) {
   result = rank[i](string s | isStrongEncryptionAlgorithm(s))
 }
 
-private string secureAlgorithmString(int i) {
-  i = 1 and result = rankedSecureAlgorithm(i)
-  or
-  result = rankedSecureAlgorithm(i) + "|" + secureAlgorithmString(i - 1)
+private string secureAlgorithmString() {
+  result = concat(int i | | rankedSecureAlgorithm(i), "|" order by i desc)
 }
 
 /**
  * Gets a regular expression for matching strings that look like they
  * contain an algorithm that is known to be secure.
  */
-string getSecureAlgorithmRegex() {
-  result = algorithmRegex(secureAlgorithmString(max(int i | exists(rankedSecureAlgorithm(i)))))
-}
+string getSecureAlgorithmRegex() { result = algorithmRegex(secureAlgorithmString()) }
 
 /**
  * Names of known ciphers supported by the Ruby `OpenSSL` library, and
@@ -544,8 +536,7 @@ private class CipherNode extends DataFlow::Node {
 }
 
 /** An operation using the OpenSSL library that uses a cipher. */
-private class CipherOperation extends Cryptography::CryptographicOperation::Range,
-  DataFlow::CallNode
+private class CipherOperation extends Cryptography::CryptographicOperation::Range instanceof DataFlow::CallNode
 {
   private CipherNode cipherNode;
 
@@ -564,8 +555,8 @@ private class CipherOperation extends Cryptography::CryptographicOperation::Rang
   }
 
   override DataFlow::Node getAnInput() {
-    this.getMethodName() = "update" and
-    result = this.getArgument(0)
+    super.getMethodName() = "update" and
+    result = super.getArgument(0)
   }
 
   override Cryptography::BlockMode getBlockMode() {

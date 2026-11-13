@@ -15,6 +15,8 @@ private import TranslatedCall
 private import TranslatedStmt
 private import TranslatedFunction
 private import TranslatedGlobalVar
+private import TranslatedNonStaticDataMember
+private import TranslatedInitialization
 
 TranslatedElement getInstructionTranslatedElement(Instruction instruction) {
   instruction = TRawInstruction(result, _)
@@ -44,6 +46,9 @@ module Raw {
       or
       not var.isFromUninstantiatedTemplate(_) and
       var instanceof StaticInitializedStaticLocalVariable
+      or
+      not var.isFromUninstantiatedTemplate(_) and
+      var instanceof Field
     ) and
     var.hasInitializer() and
     (
@@ -63,6 +68,8 @@ module Raw {
     getTranslatedFunction(decl).hasUserVariable(var, type)
     or
     getTranslatedVarInit(decl).hasUserVariable(var, type)
+    or
+    getTranslatedFieldInit(decl).hasUserVariable(var, type)
   }
 
   cached
@@ -109,7 +116,7 @@ module Raw {
   }
 
   cached
-  Function getInstructionFunction(Instruction instruction) {
+  Declaration getInstructionFunction(Instruction instruction) {
     result =
       getInstructionTranslatedElement(instruction)
           .getInstructionFunction(getInstructionTag(instruction))
@@ -171,11 +178,111 @@ module Raw {
       // forwarded the result of another translated expression.
       instruction = translatedExpr.getInstruction(_)
     )
+    or
+    // Consider the snippet `if(x) { ... }` where `x` is an integer.
+    // In C++ there is a `BoolConversion` conversion on `x` which generates a
+    // `CompareNEInstruction` whose `getInstructionConvertedResultExpression`
+    // is the `BoolConversion` (by the logic in the disjunct above). Thus,
+    // calling `getInstructionUnconvertedResultExpression` on the
+    // `CompareNEInstruction` gives `x` in C++ code.
+    // However, in C there is no such conversion to return. So instead we have
+    // to map the result of `getInstructionConvertedResultExpression` on the
+    // `CompareNEInstruction` to `x` manually. This ensures that calling
+    // `getInstructionUnconvertedResultExpression` on the `CompareNEInstruction`
+    // gives `x` in both the C case and C++ case.
+    exists(TranslatedValueCondition translatedValueCondition |
+      translatedValueCondition = getTranslatedCondition(result) and
+      translatedValueCondition.shouldGenerateCompareNE() and
+      instruction = translatedValueCondition.getInstruction(ValueConditionCompareTag())
+    )
   }
 
   cached
   Expr getInstructionUnconvertedResultExpression(Instruction instruction) {
     result = getInstructionConvertedResultExpression(instruction).getUnconverted()
+  }
+
+  /**
+   * Gets the expression associated with the instruction `instr` that computes
+   * the `Convert` instruction on the extent expression of an allocation.
+   */
+  cached
+  Expr getAllocationExtentConvertExpr(Instruction instr) {
+    exists(TranslatedNonConstantAllocationSize tas |
+      instr = tas.getInstruction(AllocationExtentConvertTag()) and
+      result = tas.getExtent().getExpr()
+    )
+  }
+
+  /**
+   * Gets the `ParenthesisExpr` associated with a transparent conversion
+   * instruction, if any.
+   */
+  cached
+  ParenthesisExpr getTransparentConversionParenthesisExpr(Instruction instr) {
+    exists(TranslatedTransparentConversion ttc |
+      result = ttc.getExpr() and
+      instr = ttc.getResult()
+    )
+  }
+
+  /**
+   * Holds if `instr` belongs to a `TranslatedCoreExpr` that produces an
+   * expression result. This indicates that the instruction represents a
+   * definition whose result should be mapped back to the expression.
+   */
+  cached
+  predicate instructionProducesExprResult(Instruction instr) {
+    exists(TranslatedCoreExpr tco |
+      tco.getInstruction(_) = instr and
+      tco.producesExprResult()
+    )
+  }
+
+  /**
+   * Gets the expression associated with a `StoreInstruction` generated
+   * by an `TranslatedAssignOperation`.
+   */
+  cached
+  Expr getAssignOperationStoreExpr(StoreInstruction store) {
+    exists(TranslatedAssignOperation tao |
+      store = tao.getInstruction(AssignmentStoreTag()) and
+      result = tao.getExpr()
+    )
+  }
+
+  /**
+   * Gets the expression associated with a `StoreInstruction` generated
+   * by an `TranslatedCrementOperation`.
+   */
+  cached
+  Expr getCrementOperationStoreExpr(StoreInstruction store) {
+    exists(TranslatedCrementOperation tco |
+      store = tco.getInstruction(CrementStoreTag()) and
+      result = tco.getExpr()
+    )
+  }
+
+  /**
+   * Holds if `store` is a `StoreInstruction` that defines the temporary
+   * `IRVariable` generated as part of the translation of a ternary expression.
+   */
+  cached
+  predicate isConditionalExprTempStore(StoreInstruction store) {
+    exists(TranslatedConditionalExpr tce |
+      store = tce.getInstruction(ConditionValueFalseStoreTag())
+      or
+      store = tce.getInstruction(ConditionValueTrueStoreTag())
+    )
+  }
+
+  /** Gets the instruction that computes the address used to initialize `v`. */
+  cached
+  Instruction getInitializationTargetAddress(IRVariable v) {
+    exists(TranslatedVariableInitialization init |
+      init.getIRVariable() = v and
+      result = init.getTargetAddress()
+    )
   }
 }
 
@@ -202,6 +309,8 @@ Instruction getMemoryOperandDefinition(
 ) {
   none()
 }
+
+predicate hasIncompleteSsa(IRFunction f) { none() }
 
 /**
  * Holds if the operand totally overlaps with its definition and consumes the
@@ -406,6 +515,8 @@ predicate hasUnreachedInstruction(IRFunction func) {
     any(Options opt).exits(c.getTarget())
   )
 }
+
+IRVariable getAnUninitializedGroupVariable(UninitializedGroupInstruction instr) { none() }
 
 import CachedForDebugging
 

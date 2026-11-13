@@ -6,7 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Xml;
-using Semmle.Util;
+using Semmle.Util.Logging;
 
 namespace Semmle.Util
 {
@@ -120,17 +120,28 @@ namespace Semmle.Util
         bool IsMacOs();
 
         /// <summary>
+        /// Gets a value indicating whether we are running on Linux.
+        /// </summary>
+        /// <returns>True if we are running on Linux.</returns>
+        bool IsLinux();
+
+        /// <summary>
         /// Gets a value indicating whether we are running on Apple Silicon.
         /// </summary>
         /// <returns>True if we are running on Apple Silicon.</returns>
         bool IsRunningOnAppleSilicon();
 
         /// <summary>
-        /// Combine path segments, Path.Combine().
+        /// Checks if Mono is installed.
+        /// </summary>
+        bool IsMonoInstalled();
+
+        /// <summary>
+        /// Joins path segments, Path.Join().
         /// </summary>
         /// <param name="parts">The parts of the path.</param>
         /// <returns>The combined path.</returns>
-        string PathCombine(params string[] parts);
+        string PathJoin(params string[] parts);
 
         /// <summary>
         /// Gets the full path for <paramref name="path"/>, Path.GetFullPath().
@@ -165,7 +176,7 @@ namespace Semmle.Util
         /// <summary>
         /// Downloads the resource with the specified URI to a local file.
         /// </summary>
-        void DownloadFile(string address, string fileName);
+        void DownloadFile(string address, string fileName, ILogger logger);
 
         /// <summary>
         /// Creates an <see cref="IDiagnosticsWriter" /> for the given <paramref name="filename" />.
@@ -241,6 +252,8 @@ namespace Semmle.Util
 
         bool IBuildActions.IsMacOs() => RuntimeInformation.IsOSPlatform(OSPlatform.OSX);
 
+        bool IBuildActions.IsLinux() => RuntimeInformation.IsOSPlatform(OSPlatform.Linux);
+
         bool IBuildActions.IsRunningOnAppleSilicon()
         {
             var thisBuildActions = (IBuildActions)this;
@@ -261,7 +274,26 @@ namespace Semmle.Util
             }
         }
 
-        string IBuildActions.PathCombine(params string[] parts) => Path.Combine(parts);
+        bool IBuildActions.IsMonoInstalled()
+        {
+            var thisBuildActions = (IBuildActions)this;
+
+            if (thisBuildActions.IsWindows())
+            {
+                return false;
+            }
+
+            try
+            {
+                return 0 == thisBuildActions.RunProcess("mono", "--version", workingDirectory: null, env: null);
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
+        string IBuildActions.PathJoin(params string[] parts) => Path.Join(parts);
 
         void IBuildActions.WriteAllText(string filename, string contents) => File.WriteAllText(filename, contents);
 
@@ -280,8 +312,8 @@ namespace Semmle.Util
 
         public string EnvironmentExpandEnvironmentVariables(string s) => Environment.ExpandEnvironmentVariables(s);
 
-        public void DownloadFile(string address, string fileName) =>
-            FileUtils.DownloadFile(address, fileName);
+        public void DownloadFile(string address, string fileName, ILogger logger) =>
+            FileUtils.DownloadFile(address, fileName, logger);
 
         public IDiagnosticsWriter CreateDiagnosticsWriter(string filename) => new DiagnosticsStream(filename);
 

@@ -1,6 +1,10 @@
+overlay[local?]
+module;
+
 private import go
 private import semmle.go.dataflow.FunctionInputsAndOutputs
 private import semmle.go.dataflow.FlowSummary
+private import semmle.go.dataflow.SsaImpl as SsaImpl
 private import DataFlowPrivate
 private import FlowSummaryImpl as FlowSummaryImpl
 private import semmle.go.dataflow.ExternalFlow
@@ -10,9 +14,13 @@ private newtype TNode =
   MkInstructionNode(IR::Instruction insn) or
   MkSsaNode(SsaDefinition ssa) or
   MkGlobalFunctionNode(Function f) or
-  MkImplicitVarargsSlice(CallExpr c) { c.hasImplicitVarargs() } or
+  MkImplicitVarargsSlice(IR::EvalInstruction ins) {
+    // We only use CallExprs with an EvalInstruction to guarantee reachability.
+    ins.getExpr().(CallExpr).hasImplicitVarargs()
+  } or
   MkSliceElementNode(SliceExpr se) or
-  MkFlowSummaryNode(FlowSummaryImpl::Private::SummaryNode sn)
+  MkFlowSummaryNode(FlowSummaryImpl::Private::SummaryNode sn) or
+  MkDefaultPostUpdateNode(IR::Instruction insn) { insnHasPostUpdateNode(insn) }
 
 /** Nodes intended for only use inside the data-flow libraries. */
 module Private {
@@ -78,9 +86,7 @@ module Private {
       result = this.getSummaryNode().getSummarizedCallable()
     }
 
-    override predicate hasLocationInfo(string fp, int sl, int sc, int el, int ec) {
-      this.getSummarizedCallable().hasLocationInfo(fp, sl, sc, el, ec)
-    }
+    override Location getLocation() { result = this.getSummaryNode().getLocation() }
 
     override string toString() { result = this.getSummaryNode().toString() }
 
@@ -140,45 +146,38 @@ module Public {
     /** Gets a textual representation of this element. */
     string toString() { result = "data-flow node" } // overridden in subclasses
 
+    /** Gets the location of this node. */
+    Location getLocation() { none() }
+
     /**
+     * DEPRECATED: Use `getLocation()` instead.
+     *
      * Holds if this element is at the specified location.
      * The location spans column `startcolumn` of line `startline` to
      * column `endcolumn` of line `endline` in file `filepath`.
      * For more information, see
      * [Locations](https://codeql.github.com/docs/writing-codeql-queries/providing-locations-in-codeql-queries/).
      */
-    predicate hasLocationInfo(
+    deprecated predicate hasLocationInfo(
       string filepath, int startline, int startcolumn, int endline, int endcolumn
     ) {
-      filepath = "" and
-      startline = 0 and
-      startcolumn = 0 and
-      endline = 0 and
-      endcolumn = 0
-    }
-
-    /** Gets the location of this node. */
-    Location getLocation() {
-      exists(string filepath, int startline, int startcolumn, int endline, int endcolumn |
-        this.hasLocationInfo(filepath, startline, startcolumn, endline, endcolumn) and
-        result.hasLocationInfo(filepath, startline, startcolumn, endline, endcolumn)
-      )
+      this.getLocation().hasLocationInfo(filepath, startline, startcolumn, endline, endcolumn)
     }
 
     /** Gets the file in which this node appears. */
-    File getFile() { this.hasLocationInfo(result.getAbsolutePath(), _, _, _, _) }
+    File getFile() { result = this.getLocation().getFile() }
 
     /** Gets the start line of the location of this node. */
-    int getStartLine() { this.hasLocationInfo(_, result, _, _, _) }
+    int getStartLine() { result = this.getLocation().getStartLine() }
 
     /** Gets the start column of the location of this node. */
-    int getStartColumn() { this.hasLocationInfo(_, _, result, _, _) }
+    int getStartColumn() { result = this.getLocation().getStartColumn() }
 
     /** Gets the end line of the location of this node. */
-    int getEndLine() { this.hasLocationInfo(_, _, _, result, _) }
+    int getEndLine() { result = this.getLocation().getEndLine() }
 
     /** Gets the end column of the location of this node. */
-    int getEndColumn() { this.hasLocationInfo(_, _, _, _, result) }
+    int getEndColumn() { result = this.getLocation().getEndColumn() }
 
     /**
      * Gets an upper bound on the type of this node.
@@ -262,11 +261,7 @@ module Public {
 
     override string toString() { result = insn.toString() }
 
-    override predicate hasLocationInfo(
-      string filepath, int startline, int startcolumn, int endline, int endcolumn
-    ) {
-      insn.hasLocationInfo(filepath, startline, startcolumn, endline, endcolumn)
-    }
+    override Location getLocation() { result = insn.getLocation() }
   }
 
   /**
@@ -292,19 +287,27 @@ module Public {
 
     SsaNode() { this = MkSsaNode(ssa) }
 
-    /** Gets the node whose value is stored in this SSA variable, if any. */
-    Node getInit() { result = DataFlow::instructionNode(ssa.(SsaExplicitDefinition).getRhs()) }
+    /** Gets the node whose value is stored in this SSA definition, if any. */
+    Node getInit() {
+      result = DataFlow::instructionNode(ssa.(SsaExplicitWrite).getDefinition().getRhs())
+    }
 
-    /** Gets a use of this SSA variable. */
-    InstructionNode getAUse() { result = DataFlow::instructionNode(ssa.getVariable().getAUse()) }
+    /** Gets a use of this SSA definition. */
+    InstructionNode getAUse() {
+      exists(BasicBlock bb, int i |
+        result.asInstruction() = bb.getNode(i) and
+        SsaImpl::ssaDefReachesRead(ssa.getSourceVariable(), ssa, bb, i) and
+        SsaImpl::useAt(bb, i, ssa.getSourceVariable())
+      )
+    }
 
-    /** Gets the program variable corresponding to this SSA variable. */
+    /** Gets the program variable corresponding to this SSA definition. */
     SsaSourceVariable getSourceVariable() { result = ssa.getSourceVariable() }
 
-    /** Gets the unique definition of this SSA variable. */
+    /** Gets this SSA definition. */
     SsaDefinition getDefinition() { result = ssa }
 
-    override ControlFlow::Root getRoot() { result = ssa.getRoot() }
+    override ControlFlow::Root getRoot() { result = SsaImpl::getSsaDefinitionRoot(ssa) }
 
     override Type getType() { result = ssa.getSourceVariable().getType() }
 
@@ -312,11 +315,7 @@ module Public {
 
     override string toString() { result = ssa.toString() }
 
-    override predicate hasLocationInfo(
-      string filepath, int startline, int startcolumn, int endline, int endcolumn
-    ) {
-      ssa.hasLocationInfo(filepath, startline, startcolumn, endline, endcolumn)
-    }
+    override Location getLocation() { result = ssa.getLocation() }
   }
 
   private module FunctionNode {
@@ -408,11 +407,7 @@ module Public {
 
     override string toString() { result = "function " + func.getName() }
 
-    override predicate hasLocationInfo(
-      string filepath, int startline, int startcolumn, int endline, int endcolumn
-    ) {
-      func.hasLocationInfo(filepath, startline, startcolumn, endline, endcolumn)
-    }
+    override Location getLocation() { result = func.getLocation() }
 
     override ResultNode getAResult() {
       result.getRoot() = this.getFunction().(DeclaredFunction).getFuncDecl()
@@ -447,7 +442,7 @@ module Public {
   class ImplicitVarargsSlice extends Node, MkImplicitVarargsSlice {
     CallNode call;
 
-    ImplicitVarargsSlice() { this = MkImplicitVarargsSlice(call.getCall()) }
+    ImplicitVarargsSlice() { this = MkImplicitVarargsSlice(call.asInstruction()) }
 
     override ControlFlow::Root getRoot() { result = call.getRoot() }
 
@@ -464,11 +459,7 @@ module Public {
 
     override string toString() { result = "[]type{args}" }
 
-    override predicate hasLocationInfo(
-      string filepath, int startline, int startcolumn, int endline, int endcolumn
-    ) {
-      call.hasLocationInfo(filepath, startline, startcolumn, endline, endcolumn)
-    }
+    override Location getLocation() { result = call.getLocation() }
   }
 
   /**
@@ -509,6 +500,7 @@ module Public {
      * For virtual calls, we look up possible targets in all types that implement the receiver
      * interface type.
      */
+    overlay[global]
     Callable getACalleeIncludingExternals() {
       result = this.getACalleeWithoutVirtualDispatch()
       or
@@ -525,6 +517,8 @@ module Public {
      * As `getACalleeIncludingExternals`, except excluding external functions (those for which
      * we lack a definition, such as standard library functions).
      */
+    overlay[global]
+    pragma[nomagic]
     FuncDef getACallee() { result = this.getACalleeIncludingExternals().getFuncDef() }
 
     /**
@@ -726,7 +720,10 @@ module Public {
     override string getNodeKind() { result = "external parameter node" }
 
     override Type getType() {
-      result = this.getSummarizedCallable().getType().getParameterType(this.getPos())
+      result =
+        this.getSummarizedCallable()
+            .getType()
+            .getParameterType(pragma[only_bind_into](this.getPos()))
       or
       this.getPos() = -1 and
       result = this.getSummarizedCallable().asFunction().(Method).getReceiverType()
@@ -744,7 +741,7 @@ module Public {
 
     UnusedParameterNode() {
       insn = IR::initParamInstruction(parm) and
-      not exists(SsaExplicitDefinition ssa | ssa.getInstruction() = insn)
+      not exists(SsaExplicitWrite ssa | ssa.getDefinition() = insn)
     }
 
     /** Gets the parameter this node initializes. */
@@ -757,10 +754,10 @@ module Public {
 
   /** A representation of a parameter initialization, defined in source via an SSA node. */
   class SsaParameterNode extends ParameterNode, SsaNode {
-    override SsaExplicitDefinition ssa;
+    override SsaParameterInit ssa;
     Parameter parm;
 
-    SsaParameterNode() { ssa.getInstruction() = IR::initParamInstruction(parm) }
+    SsaParameterNode() { ssa.getParameter() = parm }
 
     /** Gets the parameter this node initializes. */
     override Parameter asParameter() { result = parm }
@@ -781,18 +778,45 @@ module Public {
     predicate isReceiverOf(MethodDecl m) { parm.isReceiverOf(m) }
   }
 
-  private Node getADirectlyWrittenNode() {
-    exists(Write w | w.writesComponent(result, _)) or
-    result = DataFlow::exprNode(any(SendStmt s).getChannel())
-  }
-
-  private DataFlow::Node getAccessPathPredecessor(DataFlow::Node node) {
-    result = node.(PointerDereferenceNode).getOperand()
+  private IR::Instruction getADirectlyWrittenInsn() {
+    exists(Write w | w.writesComponentInstruction(result, _))
     or
-    result = node.(ComponentReadNode).getBase()
+    result = any(Write w).getLhs().(IR::PointerTarget).getBase()
+    or
+    result = IR::evalExprInstruction(any(SendStmt s).getChannel())
   }
 
-  private Node getAWrittenNode() { result = getAccessPathPredecessor*(getADirectlyWrittenNode()) }
+  private IR::Instruction getAccessPathPredecessorInsn(IR::Instruction insn) {
+    exists(Expr e1, Expr e2 |
+      insn = IR::evalExprInstruction(e1) and result = IR::evalExprInstruction(e2)
+    |
+      e2 = e1.(DerefExpr).getOperand() or e2 = e1.(StarExpr).getBase()
+    )
+    or
+    exists(Expr e | insn = IR::implicitDerefInstruction(e) and result = IR::evalExprInstruction(e))
+    or
+    result = insn.(IR::ComponentReadInstruction).getBase()
+  }
+
+  private IR::Instruction getAWrittenInsn() {
+    result = getADirectlyWrittenInsn()
+    or
+    result = getAccessPathPredecessorInsn(getAWrittenInsn())
+  }
+
+  private IR::Instruction getAMethodReceiverInsn() {
+    exists(CallExpr call, IR::MethodReadInstruction methodRead |
+      call.getTarget() instanceof Method and
+      methodRead = IR::evalExprInstruction(call.getCalleeExpr()) and
+      result = methodRead.getReceiver()
+    )
+    or
+    // If a.x is reading a promoted field, and it's equivalent to a.b.c.x,
+    // then methodRead.getReceiver() will give us the implicit field read a.b.c
+    // and we want to have post-update nodes for a, the implicit field
+    // read a.b and the implicit field read a.b.c.
+    result = IR::lookThroughImplicitFieldRead(getAMethodReceiverInsn())
+  }
 
   /**
    * Holds if `tp` is a type that may (directly or indirectly) reference a memory location.
@@ -828,35 +852,49 @@ module Public {
     abstract Node getPreUpdateNode();
   }
 
-  private class DefaultPostUpdateNode extends PostUpdateNode {
+  /** Holds if the node corresponding to `insn` has a post-update node. */
+  predicate insnHasPostUpdateNode(IR::Instruction insn) {
+    exists(Expr e | insn.(IR::EvalInstruction).getExpr() = e |
+      e instanceof AddressExpr or
+      e = any(AddressExpr ae).getOperand() or
+      e = any(StarExpr ae).getBase() or
+      e = any(DerefExpr ae).getOperand() or
+      e = any(IR::EvalImplicitDerefInstruction eidi).getOperand()
+    )
+    or
+    (
+      exists(CallExpr ce |
+        ce.getArgument(0).getType() instanceof TupleType and
+        insn = IR::extractTupleElement(IR::evalExprInstruction(ce.getArgument(0)), _)
+        or
+        not ce.getArgument(0).getType() instanceof TupleType and
+        insn = IR::evalExprInstruction(ce.getAnArgument())
+      )
+      or
+      // Receiver of a method call
+      insn = getAMethodReceiverInsn()
+    ) and
+    mutableType(insn.getResultType())
+    or
+    insn = getAWrittenInsn()
+  }
+
+  private class DefaultPostUpdateNode extends PostUpdateNode, MkDefaultPostUpdateNode {
     Node preupd;
 
-    DefaultPostUpdateNode() {
-      (
-        preupd instanceof AddressOperationNode
-        or
-        preupd = any(AddressOperationNode addr).getOperand()
-        or
-        preupd = any(PointerDereferenceNode deref).getOperand()
-        or
-        preupd = getAWrittenNode()
-        or
-        (
-          preupd instanceof ArgumentNode and not preupd instanceof ImplicitVarargsSlice
-          or
-          preupd = any(CallNode c).getAnImplicitVarargsArgument()
-        ) and
-        mutableType(preupd.getType())
-      ) and
-      (
-        preupd = this.(SsaNode).getAUse()
-        or
-        preupd = this and
-        not basicLocalFlowStep(_, this)
-      )
-    }
+    DefaultPostUpdateNode() { this = MkDefaultPostUpdateNode(preupd.asInstruction()) }
 
     override Node getPreUpdateNode() { result = preupd }
+
+    override ControlFlow::Root getRoot() { result = preupd.getRoot() }
+
+    override Type getType() { result = preupd.getType() }
+
+    override string getNodeKind() { result = "post-update node" }
+
+    override string toString() { result = preupd.toString() + " [postupdate]" }
+
+    override Location getLocation() { result = preupd.getLocation() }
   }
 
   /**
@@ -889,20 +927,40 @@ module Public {
      * Gets this argument's position.
      */
     int getPosition() { result = i }
+
+    /**
+     * Gets a data-flow node for a syntactic argument corresponding to this
+     * argument. If this argument is not an implicit varargs slice then this
+     * will just be the argument itself. If this argument is an implicit
+     * varargs slice then this will be a data-flow node that for an argument
+     * that is stored in the implicit varargs slice.
+     */
+    Node getACorrespondingSyntacticArgument() {
+      not this instanceof DataFlow::ImplicitVarargsSlice and
+      result = this
+      or
+      this instanceof DataFlow::ImplicitVarargsSlice and
+      result = c.getAnImplicitVarargsArgument()
+    }
   }
 
   /**
    * A node whose value is returned as a result from a function.
    *
-   * This can either be a node corresponding to an expression in a return statement,
-   * or a node representing the current value of a named result variable at the exit
-   * of the function.
+   * If the function declares named result variables, this is a node representing
+   * the current value of one of those variables at function exit. Otherwise, this
+   * is a node corresponding to an expression in a return statement.
    */
   class ResultNode extends InstructionNode {
     int i;
 
     ResultNode() {
       exists(FuncDef fd |
+        // If the function has named result variables, then the
+        // `IR::ReadResultInstruction` nodes at the end of the function are
+        // the correct result nodes. Otherwise, the returned expressions are
+        // the result nodes.
+        not exists(fd.getAResultVar()) and
         exists(IR::ReturnInstruction ret | ret.getRoot() = fd | insn = ret.getResult(i))
         or
         insn.(IR::ReadResultInstruction).reads(fd.getResultVar(i))
@@ -927,9 +985,18 @@ module Public {
     predicate reads(ValueEntity v) { insn.reads(v) }
 
     /**
+     * Holds if this data-flow node reads the value of SSA definition `def`.
+     */
+    predicate readsSsaDefinition(SsaDefinition def) {
+      exists(SsaNode ssa | ssa.getDefinition() = def and this = ssa.getAUse())
+    }
+
+    /**
+     * DEPRECATED: Use `readsSsaDefinition` instead.
+     *
      * Holds if this data-flow node reads the value of SSA variable `v`.
      */
-    predicate readsSsaVariable(SsaVariable v) { insn = v.getAUse() }
+    deprecated predicate readsSsaVariable(SsaVariable v) { this.readsSsaDefinition(v) }
 
     /**
      * Holds if this data-flow node reads the value of field `f` on the value of `base` or its
@@ -1004,7 +1071,7 @@ module Public {
   class ComponentReadNode extends ReadNode {
     override IR::ComponentReadInstruction insn;
 
-    /** Gets the data-flow node representing the base from which the field or element is read. */
+    /** Gets the data-flow node representing the base from which the field or element is read. */
     Node getBase() { result = DataFlow::instructionNode(insn.getBase()) }
   }
 
@@ -1062,11 +1129,7 @@ module Public {
 
     override string toString() { result = "slice element node" }
 
-    override predicate hasLocationInfo(
-      string filepath, int startline, int startcolumn, int endline, int endcolumn
-    ) {
-      si.hasLocationInfo(filepath, startline, startcolumn, endline, endcolumn)
-    }
+    override Location getLocation() { result = si.getLocation() }
 
     /** Gets the `SliceNode` which this node relates to. */
     SliceNode getSliceNode() { result = DataFlow::instructionNode(si) }
@@ -1093,15 +1156,6 @@ module Public {
         left = DataFlow::exprNode(assgn.getLhs()) and
         right = DataFlow::exprNode(assgn.getRhs()) and
         op = o.substring(0, o.length() - 1)
-      )
-      or
-      exists(IR::EvalIncDecRhsInstruction rhs, IncDecStmt ids |
-        rhs = this.asInstruction() and ids = rhs.getStmt()
-      |
-        left = DataFlow::exprNode(ids.getOperand()) and
-        right =
-          DataFlow::instructionNode(any(IR::EvalImplicitOneInstruction one | one.getStmt() = ids)) and
-        op = ids.getOperator().charAt(0)
       )
     }
 
@@ -1331,7 +1385,6 @@ module Public {
   }
 }
 
-private import Private
 private import Public
 
 class SummaryPostUpdateNode extends FlowSummaryNode, PostUpdateNode {
